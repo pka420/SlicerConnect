@@ -1,12 +1,14 @@
-import os
+import os 
+import ctk 
 import qt
 import slicer
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 import logging
+import importlib
 
-from _api_client import BackendAPIClient
-from _websocket_client import CollaborationWebSocketClient
+from Lib.api_client import BackendAPIClient
+from Lib.websocket_client import CollaborationWebSocketClient
 
 
 class CollaborativeSegmentation(ScriptedLoadableModule):
@@ -18,7 +20,7 @@ class CollaborativeSegmentation(ScriptedLoadableModule):
         self.parent.title = "Collaborative Segmentation"
         self.parent.categories = ["Segmentation"]
         self.parent.dependencies = []
-        self.parent.contributors = ["Your Name"]
+        self.parent.contributors = ["Piyush Khurana"]
         self.parent.helpText = """
         This extension enables collaborative editing of segmentations in 3D Slicer.
         Multiple users can work together in real-time on the same segmentation.
@@ -26,7 +28,6 @@ class CollaborativeSegmentation(ScriptedLoadableModule):
         self.parent.acknowledgementText = """
         Developed for collaborative medical image analysis.
         """
-
 
 class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """
@@ -45,19 +46,22 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         self.current_session = None
         self.current_segmentation = None
 
+
     def setup(self):
+        print('in setup')
+        from Lib.api_client import BackendAPIClient
+
         """Setup the UI"""
         ScriptedLoadableModuleWidget.setup(self)
+        uiWidget = slicer.util.loadUI(self.resourcePath("UI/CollaborativeSegmentation.ui"))
 
         self.logic = CollaborativeSegmentationLogic()
 
-        # Main collapsible button
         self.mainCollapsible = ctk.ctkCollapsibleButton()
         self.mainCollapsible.text = "Collaborative Segmentation"
         self.layout.addWidget(self.mainCollapsible)
         mainLayout = qt.QVBoxLayout(self.mainCollapsible)
 
-        # ── Connection & Authentication Status ───────────────────────────────
         statusGroup = qt.QGroupBox("Connection Status")
         statusLayout = qt.QFormLayout(statusGroup)
         mainLayout.addWidget(statusGroup)
@@ -70,153 +74,44 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         self.refreshConnectionButton.clicked.connect(self._initializeConnection)
         statusLayout.addRow("", self.refreshConnectionButton)
 
-        # Project & Session area
-        self.projectGroup = qt.QGroupBox("Projects & Sessions")
-        projectLayout = qt.QVBoxLayout(self.projectGroup)
-        mainLayout.addWidget(self.projectGroup)
-        self.projectGroup.setEnabled(False)
+        self.layout.addWidget(uiWidget)
+        self.ui = slicer.util.childWidgetVariables(uiWidget)
 
-        # Tab widget for project options
-        self.projectTabs = qt.QTabWidget()
-        projectLayout.addWidget(self.projectTabs)
+        self.ui.segmentationFileEdit.setReadOnly(True)
+        self.ui.browseFileButton.connect('clicked(bool)', self.onBrowseSegmentation)
 
-        self.createProjectTab = self._createNewProjectTab()
-        self.projectTabs.addTab(self.createProjectTab, "Create New")
-
-        self.selectProjectTab = self._createSelectProjectTab()
-        self.projectTabs.addTab(self.selectProjectTab, "My Projects")
-
-        self.joinLinkTab = self._createJoinLinkTab()
-        self.projectTabs.addTab(self.joinLinkTab, "Join via Link")
-
-        # Active Session panel
-        self.sessionGroup = qt.QGroupBox("Active Session")
-        sessionLayout = qt.QVBoxLayout(self.sessionGroup)
-        mainLayout.addWidget(self.sessionGroup)
-        self.sessionGroup.setVisible(False)
-
-        self.sessionInfoLabel = qt.QLabel("No active session")
-        sessionLayout.addWidget(self.sessionInfoLabel)
-
-        usersLabel = qt.QLabel("Active Users:")
-        usersLabel.setStyleSheet("font-weight: bold;")
-        sessionLayout.addWidget(usersLabel)
-
-        self.activeUsersList = qt.QListWidget()
-        self.activeUsersList.setMaximumHeight(100)
-        sessionLayout.addWidget(self.activeUsersList)
-
-        # Session actions
-        actionsLayout = qt.QHBoxLayout()
-        sessionLayout.addLayout(actionsLayout)
-
-        self.leaveSessionButton = qt.QPushButton("Leave Session")
-        self.leaveSessionButton.clicked.connect(self.onLeaveSession)
-        actionsLayout.addWidget(self.leaveSessionButton)
-
-        self.endSessionButton = qt.QPushButton("End Session")
-        self.endSessionButton.clicked.connect(self.onEndSession)
-        actionsLayout.addWidget(self.endSessionButton)
-
-        # Share link
-        shareLayout = qt.QHBoxLayout()
-        sessionLayout.addLayout(shareLayout)
-
-        self.sessionLinkEdit = qt.QLineEdit()
-        self.sessionLinkEdit.setReadOnly(True)
-        shareLayout.addWidget(self.sessionLinkEdit)
-
-        self.copyLinkButton = qt.QPushButton("Copy Link")
-        self.copyLinkButton.clicked.connect(self.onCopyLink)
-        shareLayout.addWidget(self.copyLinkButton)
-
-        self.layout.addStretch(1)
-
-        # Try to initialize connection on startup
         self._initializeConnection()
+
+    def onBrowseSegmentation(self):
+        file_path = qt.QFileDialog.getOpenFileName(
+            None, "Select Segmentation", "", 
+            "Volumes (*.nii *.nrrd *.nifti *.mha *.gz)"
+        )
+        if file_path:
+            self.ui.segmentationFileEdit.setText(file_path)
+            file_name = os.path.basename(file_path)
+            self.logic.load_segmentation(file_path, file_name)
 
     def _initializeConnection(self):
         """Try to set up API client using existing token"""
-        token = slicer.app.settings().value("SlicerConnect/Token")
-
-        if not token:
-            self.statusLabel.setText("No authentication token found")
-            self.statusLabel.setStyleSheet("color: orange;")
-            self.projectGroup.setEnabled(False)
-            slicer.util.warningDisplay(
-                "No authentication token found.\n"
-                "Please log in using the authentication module first."
-            )
-            return
-
-        server_url = slicer.app.settings().value("SlicerConnect/ServerURL", "http://localhost:8000")
-
+        token = slicer.app.settings().value("SlicerConnectToken")
+        server_url = slicer.app.settings().value("SlicerConnectServerURL", "http://localhost:8000")
         try:
             self.api_client = BackendAPIClient(server_url, token=token)
-
-            # Simple token validation / whoami call
             user_info = self.api_client.get_current_user()
-
-            self.statusLabel.setText(f"Connected as {user_info.get('username', 'user')}")
+            
+            if user_info is None:
+                self.statusLabel.setText("Authentication failed")
+                self.statusLabel.setStyleSheet("color: red;")
+                return
+            
+            self.statusLabel.setText(f"Connected as {user_info.get('username')}")
             self.statusLabel.setStyleSheet("color: green; font-weight: bold;")
-            self.projectGroup.setEnabled(True)
-
-            self.onRefreshProjects()
-
+            
         except Exception as e:
-            self.statusLabel.setText("Authentication failed")
+            self.statusLabel.setText("Connection failed")
             self.statusLabel.setStyleSheet("color: red;")
-            slicer.util.errorDisplay(f"Cannot connect to server: {str(e)}")
-            self.projectGroup.setEnabled(False)
-
-    # ──────────────────────────────────────────────────────────────────────
-    #   The rest of the UI creation methods remain almost the same
-    # ──────────────────────────────────────────────────────────────────────
-
-    def _createNewProjectTab(self):
-        widget = qt.QWidget()
-        layout = qt.QFormLayout(widget)
-
-        self.newProjectNameEdit = qt.QLineEdit()
-        layout.addRow("Project Name:", self.newProjectNameEdit)
-
-        self.newProjectDescEdit = qt.QTextEdit()
-        self.newProjectDescEdit.setMaximumHeight(60)
-        layout.addRow("Description:", self.newProjectDescEdit)
-
-        self.newSegmentationNameEdit = qt.QLineEdit()
-        layout.addRow("Segmentation Name:", self.newSegmentationNameEdit)
-
-        colorLayout = qt.QHBoxLayout()
-        self.segmentationColorButton = qt.QPushButton()
-        self.segmentationColorButton.setMaximumWidth(50)
-        self.segmentationColorButton.setStyleSheet("background-color: #FF0000;")
-        self.segmentationColorButton.clicked.connect(self.onChooseColor)
-        self.selectedColor = "#FF0000"
-        colorLayout.addWidget(self.segmentationColorButton)
-        colorLayout.addWidget(qt.QLabel(self.selectedColor))
-        layout.addRow("Color:", colorLayout)
-
-        fileLayout = qt.QHBoxLayout()
-        self.segmentationFileEdit = qt.QLineEdit()
-        fileLayout.addWidget(self.segmentationFileEdit)
-        self.browseFileButton = qt.QPushButton("Browse...")
-        self.browseFileButton.clicked.connect(self.onBrowseSegmentationFile)
-        fileLayout.addWidget(self.browseFileButton)
-        layout.addRow("Initial File:", fileLayout)
-
-        self.createProjectButton = qt.QPushButton("Create & Start Session")
-        self.createProjectButton.clicked.connect(self.onCreateProject)
-        layout.addRow("", self.createProjectButton)
-
-        return widget
-
-    # ... (keep _createSelectProjectTab(), _createJoinLinkTab() mostly unchanged)
-
-    # ──────────────────────────────────────────────────────────────────────
-    #   Important: All API calls should now use self.api_client directly
-    #   No more login step!
-    # ──────────────────────────────────────────────────────────────────────
+            print(f"Connection error: {str(e)}")
 
     def onCreateProject(self):
         if not self.api_client:

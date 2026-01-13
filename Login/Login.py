@@ -137,13 +137,13 @@ class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         def callback(success, message, token):
             self.setLoginLoading(False)
             if success:
-                slicer.app.settings().setValue("SlicerConnect/Token", token)
+                slicer.app.settings().setValue("SlicerConnectToken", token)
                 slicer.app.settings().sync()
                 self.ui.loginEmail.setText("")
                 self.ui.loginPassword.setText("")
                 self.ui.regPassword.setText("")
                 self._update_ui("Login successful")
-                slicer.util.selectModule("SyncData")
+                slicer.util.selectModule("CollaborativeSegmentation")
             else:
                 self._update_ui(message)
 
@@ -157,6 +157,7 @@ class LoginLogic(ScriptedLoadableModuleLogic):
     def __init__(self):
         super().__init__()
         self.base_url = "https://slicerconnect.from-delhi.net"
+        #self.base_url = "http://127.0.0.1:8000"
 
     def register(self, username, email, password, callback):
         try:
@@ -188,10 +189,12 @@ class LoginLogic(ScriptedLoadableModuleLogic):
                 "email": email,
                 "password": password
             }
+            print(payload)
             headers = {
                 "Content-Type": "application/json",
             }
-            response = requests.post(url, json=payload, headers=headers)
+            response = requests.post(url, json=payload, headers=headers, timeout=4)
+            print('done with request')
             try:
                 response.raise_for_status()
             except requests.HTTPError:

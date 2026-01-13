@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
- <class>ProjectSelectorWidget</class>
+ <class>CollaborativeSegmentationWidget</class>
  <widget class="QWidget" name="ProjectSelectorWidget">
   <property name="geometry">
    <rect>
@@ -19,7 +19,6 @@
      <property name="currentIndex">
       <number>0</number>
      </property>
-     <!-- Tab 1: Create New -->
      <widget class="QWidget" name="createProjectTab">
       <attribute name="title">
        <string>Create New</string>
@@ -130,14 +129,13 @@
        <item row="5" column="1">
         <widget class="QPushButton" name="createProjectButton">
          <property name="text">
-          <string>Create Project &amp; Start Session</string>
+          <string>Create Project </string>
          </property>
         </widget>
        </item>
       </layout>
      </widget>
 
-     <!-- Tab 2: My Projects -->
      <widget class="QWidget" name="selectProjectTab">
       <attribute name="title">
        <string>My Projects</string>
@@ -202,7 +200,7 @@
             <bool>false</bool>
            </property>
            <property name="text">
-            <string>Join/Start Session</string>
+            <string>Continue Editing</string>
            </property>
           </widget>
          </item>
@@ -221,7 +219,6 @@
       </layout>
      </widget>
 
-     <!-- Tab 3: Join via Link -->
      <widget class="QWidget" name="joinLinkTab">
       <attribute name="title">
        <string>Join via Link</string>
