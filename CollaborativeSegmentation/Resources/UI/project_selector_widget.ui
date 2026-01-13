@@ -1,0 +1,285 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ProjectSelectorWidget</class>
+ <widget class="QWidget" name="ProjectSelectorWidget">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>520</width>
+    <height>420</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Project Selection</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <widget class="QTabWidget" name="projectTabs">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+     <!-- Tab 1: Create New -->
+     <widget class="QWidget" name="createProjectTab">
+      <attribute name="title">
+       <string>Create New</string>
+      </attribute>
+      <layout class="QFormLayout" name="formLayout_create">
+       <item row="0" column="0">
+        <widget class="QLabel" name="label_projectName">
+         <property name="text">
+          <string>Project Name:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QLineEdit" name="newProjectNameEdit"/>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="label_description">
+         <property name="text">
+          <string>Description:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <widget class="QTextEdit" name="newProjectDescEdit">
+         <property name="maximumHeight">
+          <number>80</number>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="label_segName">
+         <property name="text">
+          <string>Segmentation Name:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QLineEdit" name="newSegmentationNameEdit"/>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="label_color">
+         <property name="text">
+          <string>Color:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="1">
+        <layout class="QHBoxLayout" name="colorLayout">
+         <item>
+          <widget class="QPushButton" name="segmentationColorButton">
+           <property name="maximumSize">
+            <size>
+             <width>50</width>
+             <height>16777215</height>
+            </size>
+           </property>
+           <property name="text">
+            <string/>
+           </property>
+           <property name="styleSheet">
+            <string notr="true">background-color: #ff0000;</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="colorValueLabel">
+           <property name="text">
+            <string>#FF0000</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="horizontalSpacer">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </item>
+       <item row="4" column="0">
+        <widget class="QLabel" name="label_initialFile">
+         <property name="text">
+          <string>Initial File:</string>
+         </property>
+        </widget>
+       </item>
+       <item row="4" column="1">
+        <layout class="QHBoxLayout" name="fileLayout">
+         <item>
+          <widget class="QLineEdit" name="segmentationFileEdit"/>
+         </item>
+         <item>
+          <widget class="QPushButton" name="browseFileButton">
+           <property name="text">
+            <string>Browse...</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item row="5" column="1">
+        <widget class="QPushButton" name="createProjectButton">
+         <property name="text">
+          <string>Create Project &amp; Start Session</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- Tab 2: My Projects -->
+     <widget class="QWidget" name="selectProjectTab">
+      <attribute name="title">
+       <string>My Projects</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_select">
+       <item>
+        <widget class="QPushButton" name="refreshProjectsButton">
+         <property name="text">
+          <string>Refresh Projects</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTreeWidget" name="projectsList">
+         <column>
+          <property name="text">
+           <string>Name</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Role</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Updated</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Status</string>
+          </property>
+         </column>
+        </widget>
+       </item>
+       <item>
+        <widget class="QLabel" name="label_segmentations">
+         <property name="text">
+          <string>Segmentations:</string>
+         </property>
+         <property name="font">
+          <font>
+           <weight>75</weight>
+           <bold>true</bold>
+          </font>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QListWidget" name="segmentationsList">
+         <property name="maximumHeight">
+          <number>120</number>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QHBoxLayout" name="horizontalLayout_actions">
+         <item>
+          <widget class="QPushButton" name="joinSessionButton">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>Join/Start Session</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="downloadSegButton">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>Download Segmentation</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+
+     <!-- Tab 3: Join via Link -->
+     <widget class="QWidget" name="joinLinkTab">
+      <attribute name="title">
+       <string>Join via Link</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="verticalLayout_join">
+       <item>
+        <widget class="QLabel" name="label_instructions">
+         <property name="text">
+          <string>Paste a session link shared by a colleague to join their collaborative session.</string>
+         </property>
+         <property name="wordWrap">
+          <bool>true</bool>
+         </property>
+         <property name="styleSheet">
+          <string notr="true">color: gray; padding: 10px;</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <layout class="QFormLayout" name="formLayout_join">
+         <item row="0" column="0">
+          <widget class="QLabel" name="label_sessionLink">
+           <property name="text">
+            <string>Session Link:</string>
+           </property>
+          </widget>
+         </item>
+         <item row="0" column="1">
+          <widget class="QLineEdit" name="sessionLinkInput"/>
+         </item>
+         <item row="1" column="1">
+          <widget class="QPushButton" name="joinLinkButton">
+           <property name="text">
+            <string>Join Session</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item>
+        <spacer name="verticalSpacer">
+         <property name="orientation">
+          <enum>Qt::Vertical</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>20</width>
+           <height>40</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
