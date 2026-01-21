@@ -108,7 +108,7 @@ class BackendAPIClient:
 
     def get_current_user(self) -> Dict:
         """Get information about currently logged-in user"""
-        info =  self._make_request('GET', f"{self.base_url}/auth/users/me")
+        info =  self._make_request('GET', f"{self.base_url}/users/me")
         print(info)
         return info
 

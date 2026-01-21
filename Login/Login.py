@@ -34,7 +34,7 @@ class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
-        self.logic = LoginLogic()
+        self.logic = LoginLogic(self)
 
         self.ui.registerButton.clicked.connect(self.onRegister)
         self.ui.loginButton.clicked.connect(self.onLogin)
@@ -112,20 +112,16 @@ class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self._update_ui("Registering...", False)
         self.setRegisterLoading(True)
+        self.logic.register(username, email, password)
 
-        def callback(success, message):
-            self.setRegisterLoading(False)
-            if success: 
-                self.ui.regUsername.setText("")
-                self.ui.regEmail.setText("")
-                self.ui.regPassword.setText("")
-            self._update_ui(message, success)
+    def onRegisterComplete(self, success, message):
+        self.setRegisterLoading(False)
+        if success: 
+            self.ui.regUsername.setText("")
+            self.ui.regEmail.setText("")
+            self.ui.regPassword.setText("")
+        self._update_ui(message, success)
 
-        threading.Thread(
-            target=self.logic.register,
-            args=(username, email, password, callback),
-            daemon=True
-        ).start()
 
     def onLogin(self):
         email = self.ui.loginEmail.text.strip()
@@ -133,33 +129,30 @@ class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self._update_ui("Logging in...")
         self.setLoginLoading(True)
+        self.logic.login(email, password)
 
-        def callback(success, message, token):
-            self.setLoginLoading(False)
-            if success:
-                slicer.app.settings().setValue("SlicerConnectToken", token)
-                slicer.app.settings().sync()
-                self.ui.loginEmail.setText("")
-                self.ui.loginPassword.setText("")
-                self.ui.regPassword.setText("")
-                self._update_ui("Login successful")
-                slicer.util.selectModule("CollaborativeSegmentation")
-            else:
-                self._update_ui(message)
+    def onLoginComplete(self, success, message, token):
+        self.setLoginLoading(False)
+        if success:
+            slicer.app.settings().setValue("SlicerConnectToken", token)
+            slicer.app.settings().sync()
+            self.ui.loginEmail.setText("")
+            self.ui.loginPassword.setText("")
+            self.ui.regPassword.setText("")
+            self._update_ui("Login successful")
+            slicer.util.selectModule("CollaborativeSegmentation")
+        else:
+            self._update_ui(message)
 
-        threading.Thread(
-            target=self.logic.login,
-            args=(email, password, callback),
-            daemon=True
-        ).start()
 
 class LoginLogic(ScriptedLoadableModuleLogic):
-    def __init__(self):
+    def __init__(self, widget):
         super().__init__()
+        self.widget = widget
         self.base_url = "https://slicerconnect.from-delhi.net"
         #self.base_url = "http://127.0.0.1:8000"
 
-    def register(self, username, email, password, callback):
+    def register(self, username, email, password):
         try:
             url = f"{self.base_url}/auth/register"
             payload = {
@@ -169,60 +162,47 @@ class LoginLogic(ScriptedLoadableModuleLogic):
             }
             response = requests.post(url, json=payload, timeout=4.0)
             if response.status_code in (200, 201):
-                callback(True, response.text)
+                self.widget.onRegisterComplete(True, response.text)
             else:
                 error_msg = response.json().get("detail", response.text or "Unknown error")
-                callback(False, f"Registration failed: {error_msg}")
+                self.widget.onRegisterComplete(False, f"Registration failed: {error_msg}")
         except requests.Timeout:
-            callback(False, "Registration timed out (4 seconds).")
+            self.widget.onRegisterComplete(False, "Registration timed out (4 seconds).")
         except requests.ConnectionError:
-            callback(False, "Connection failed. Check network or server URL.")
+            self.widget.onRegisterComplete(False, "Connection failed. Check network or server URL.")
         except requests.HTTPError as e:
-            callback(False, f"Server error: {str(e)}")
+            self.widget.onRegisterComplete(False, f"Server error: {str(e)}")
         except Exception as e:
-            callback(False, f"Unexpected error: {str(e)}")
+            self.widget.onRegisterComplete(False, f"Unexpected error: {str(e)}")
 
-    def login(self, email, password, callback):
+    def login(self, email, password):
+        url = f"{self.base_url}/auth/login"
+        payload = {"email": email, "password": password}
+        headers = {"Content-Type": "application/json"}
+        
         try:
-            url = f"{self.base_url}/auth/login"
-            payload = {
-                "email": email,
-                "password": password
-            }
-            print(payload)
-            headers = {
-                "Content-Type": "application/json",
-            }
             response = requests.post(url, json=payload, headers=headers, timeout=4)
-            print('done with request')
-            try:
-                response.raise_for_status()
-            except requests.HTTPError:
-                try:
-                    data = response.json()
-                    msg = data.get("detail") or data.get("message") or response.text
-                except Exception:
-                    msg = response.text or "Login failed"
-
-                callback(False, msg, None)
-                return
-
+            response.raise_for_status()
+            
             data = response.json()
             token = data.get("access_token") or data.get("token")
-
+            
             if not token:
-                callback(False, "No token returned by server", None)
+                self.widget.onLoginComplete(False, "No token returned by server", None)
                 return
-
-            callback(True, "Login successful", token)
-
+                
+            self.widget.onLoginComplete(True, "Login successful", token)
+            
         except requests.Timeout:
-            callback(False, "Login timed out (4s)", None)
-
+            self.widget.onLoginComplete(False, "Login timed out (4s)", None)
         except requests.ConnectionError:
-            callback(False, "Cannot connect to server", None)
-
+            self.widget.onLoginComplete(False, "Cannot connect to server", None)
+        except requests.HTTPError:
+            try:
+                data = response.json()
+                msg = data.get("detail") or data.get("message") or response.text
+            except Exception:
+                msg = response.text or "Login failed"
+            self.widget.onLoginComplete(False, msg, None)
         except Exception as e:
-            callback(False, f"Unexpected error: {e}", None)
-
-
+            self.widget.onLoginComplete(False, f"Unexpected error: {e}", None)
