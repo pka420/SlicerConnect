@@ -48,85 +48,7 @@
          </property>
         </widget>
        </item>
-       <item row="2" column="0">
-        <widget class="QLabel" name="label_segName">
-         <property name="text">
-          <string>Segmentation Name:</string>
-         </property>
-        </widget>
-       </item>
        <item row="2" column="1">
-        <widget class="QLineEdit" name="newSegmentationNameEdit"/>
-       </item>
-       <item row="3" column="0">
-        <widget class="QLabel" name="label_color">
-         <property name="text">
-          <string>Color:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="3" column="1">
-        <layout class="QHBoxLayout" name="colorLayout">
-         <item>
-          <widget class="QPushButton" name="segmentationColorButton">
-           <property name="maximumSize">
-            <size>
-             <width>50</width>
-             <height>16777215</height>
-            </size>
-           </property>
-           <property name="text">
-            <string/>
-           </property>
-           <property name="styleSheet">
-            <string notr="true">background-color: #ff0000;</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <widget class="QLabel" name="colorValueLabel">
-           <property name="text">
-            <string>#FF0000</string>
-           </property>
-          </widget>
-         </item>
-         <item>
-          <spacer name="horizontalSpacer">
-           <property name="orientation">
-            <enum>Qt::Horizontal</enum>
-           </property>
-           <property name="sizeHint" stdset="0">
-            <size>
-             <width>40</width>
-             <height>20</height>
-            </size>
-           </property>
-          </spacer>
-         </item>
-        </layout>
-       </item>
-       <item row="4" column="0">
-        <widget class="QLabel" name="label_initialFile">
-         <property name="text">
-          <string>Initial File:</string>
-         </property>
-        </widget>
-       </item>
-       <item row="4" column="1">
-        <layout class="QHBoxLayout" name="fileLayout">
-         <item>
-          <widget class="QLineEdit" name="segmentationFileEdit"/>
-         </item>
-         <item>
-          <widget class="QPushButton" name="browseFileButton">
-           <property name="text">
-            <string>Browse...</string>
-           </property>
-          </widget>
-         </item>
-        </layout>
-       </item>
-       <item row="5" column="1">
         <widget class="QPushButton" name="createProjectButton">
          <property name="text">
           <string>Create Project </string>
@@ -162,7 +84,12 @@
          </column>
          <column>
           <property name="text">
-           <string>Updated</string>
+           <string>Last Updated</string>
+          </property>
+         </column>
+         <column>
+          <property name="text">
+           <string>Created at</string>
           </property>
          </column>
          <column>

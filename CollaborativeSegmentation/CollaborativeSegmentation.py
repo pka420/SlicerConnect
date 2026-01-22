@@ -10,6 +10,8 @@ import importlib
 from Lib.api_client import BackendAPIClient
 from Lib.websocket_client import CollaborationWebSocketClient
 
+from datetime import datetime
+
 
 class CollaborativeSegmentation(ScriptedLoadableModule):
     """
@@ -77,8 +79,8 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
-        self.ui.segmentationFileEdit.setReadOnly(True)
-        self.ui.browseFileButton.connect('clicked(bool)', self.onBrowseSegmentation)
+        self.ui.createProjectButton.clicked.connect(self.onCreateProject)
+        self.ui.refreshProjectsButton.clicked.connect(self.loadProjects)
 
         self._initializeConnection()
 
@@ -114,9 +116,62 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
             print(f"Connection error: {str(e)}")
 
     def onCreateProject(self):
+        print('creating project')
         if not self.api_client:
             slicer.util.errorDisplay("Not connected to server")
             return
+
+        projectName = self.ui.newProjectNameEdit.text.strip()
+        description = self.ui.newProjectDescEdit.toPlainText().strip()
+
+        print(projectName, description)
+
+        self.api_client.create_project(projectName, description)
+
+    def loadProjects(self):
+        print('loading projects')
+        if not self.api_client:
+            slicer.util.errorDisplay("Not connected to server")
+            return
+
+        projects = self.api_client.list_projects()
+        print(projects)
+
+        self.ui.projectsList.clear()
+        for project in projects:
+            item = qt.QTreeWidgetItem(self.ui.projectsList)
+            item.setText(0, project['name'])
+            item.setText(1, project['role'].capitalize())
+            date_str = project['updated_at']
+            item.setText(2, self.format_date(date_str))
+            date_str = project['created_at']
+            item.setText(3, self.format_date(date_str))
+            status = self.get_project_status(project)
+            item.setText(4, status)
+            item.setData(0, qt.Qt.UserRole, project['id'])
+            self.ui.projectsList.addTopLevelItem(item)
+        
+        for i in range(4):
+            self.ui.projectsList.resizeColumnToContents(i)
+
+    def format_date(self, date_str):
+        """Format ISO date string to readable format."""
+        if not date_str:
+            return 'Never'
+        try:
+            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            return dt.strftime('%b %d, %Y')
+        except:
+            return date_str
+
+    def get_project_status(self, project):
+        """Determine project status string."""
+        if project['is_locked']:
+            if project['locked_by_username']:
+                return f"{project['locked_by_username']}"
+            return "Locked"
+        return "Active"
+
 
     def _connectToSession(self, session_id):
         """Connect to WebSocket for collaborative session"""
