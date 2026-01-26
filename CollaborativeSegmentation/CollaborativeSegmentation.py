@@ -82,6 +82,9 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         self.ui.createProjectButton.clicked.connect(self.onCreateProject)
         self.ui.refreshProjectsButton.clicked.connect(self.loadProjects)
 
+        self.ui.projectsList.itemSelectionChanged.connect(self.onProjectSelected)
+        self.ui.joinSessionButton.connect('clicked(bool)', self.onJoinSessionClicked)
+
         self._initializeConnection()
 
     def onBrowseSegmentation(self):
@@ -153,6 +156,51 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         
         for i in range(4):
             self.ui.projectsList.resizeColumnToContents(i)
+
+    def onProjectSelected(self):
+        selectedItems = self.ui.projectsList.selectedItems()
+        
+        if not selectedItems:
+            self.ui.joinSessionButton.enabled = False
+            return
+        
+        selectedItem = selectedItems[0]
+        
+        updated_at = selectedItem.text(2)
+        
+        if updated_at != "Never":
+            self.ui.joinSessionButton.setText("Continue Editing")
+        else:
+            self.ui.joinSessionButton.setText("Start Editing")
+        
+        self.ui.joinSessionButton.enabled = True
+
+        self.displaySegmentations(selectedItem)
+        self.displayCollabStuff(selectedItem)
+
+    def displaySegmentations(self, projectItem):
+        project_id = projectItem.data(0, qt.Qt.UserRole)  
+        segs = self.api_client.list_segmentations(project_id)
+        print(segs)
+        #display in ui
+
+    def displayCollabStuff(self, projectItem):
+        project_id = projectItem.data(0, qt.Qt.UserRole)  
+        project_details = self.api_client.get_project_details(project_id)
+        collaborators = project_details.get('collaborators', [])
+        collaboratorNames = [c.get('username', 'Unknown') for c in collaborators]
+        collaboratorText = ', '.join(collaboratorNames) if collaboratorNames else 'No collaborators'
+        # self.ui.collaboratorsLabel.setText(f"Collaborators: {collaboratorText}")
+        print(f"Collaborators: {collaboratorText}")
+        
+        segCount = project_details.get('segmentation_count', 0)
+        print(f"Segmentation count: {segCount}")
+        #display this in the ui once you have time..
+        
+        return False
+
+    def onJoinSessionClicked(self):
+        return
 
     def format_date(self, date_str):
         """Format ISO date string to readable format."""

@@ -104,8 +104,6 @@ class BackendAPIClient:
             slicer.util.errorDisplay(f"Request failed: {str(e)}")
             raise
 
-    # ── API Methods using the interceptor ────────────────────────────────────
-
     def get_current_user(self) -> Dict:
         """Get information about currently logged-in user"""
         info =  self._make_request('GET', f"{self.base_url}/users/me")
@@ -122,6 +120,9 @@ class BackendAPIClient:
     def list_projects(self) -> List[Dict]:
         return self._make_request('GET', f"{self.base_url}/projects")
 
+    def get_project_details(self, project_id) -> Dict:
+        return self._make_request('GET', f"{self.base_url}/projects/{project_id}")
+
     def create_segmentation(self, project_id: str, name: str, color: str, file_path: str) -> Dict:
         import os
         files = {"file": (os.path.basename(file_path), open(file_path, "rb"), "application/octet-stream")}
@@ -137,7 +138,7 @@ class BackendAPIClient:
     def list_segmentations(self, project_id: str) -> List[Dict]:
         return self._make_request(
             'GET',
-            f"{self.base_url}/projects/{project_id}/segmentations"
+            f"{self.base_url}/segmentations/projects/{project_id}"
         )
 
     def download_segmentation(self, segmentation_id: str) -> str:
@@ -148,7 +149,7 @@ class BackendAPIClient:
             # Add headers manually for streaming
             headers = self._headers()
             response = self.session.get(
-                f"{self.base_url}/segmentations/{segmentation_id}/file",
+                f"{self.base_url}/segmentations/{segmentation_id}/download",
                 headers=headers,
                 stream=True
             )
