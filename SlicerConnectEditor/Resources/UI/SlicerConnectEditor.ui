@@ -20,24 +20,38 @@
       <string>Connection Settings</string>
      </property>
      <layout class="QFormLayout" name="connectionLayout">
-      <item row="3" column="1">
-       <widget class="QPushButton" name="refreshConnectionButton">
+      <item row="0" column="0">
+       <widget class="QLabel" name="tokenLabelText">
         <property name="text">
-         <string>Refresh Connection</string>
+         <string>Authentication:</string>
         </property>
        </widget>
       </item>
-      <item row="5" column="0">
+      <item row="0" column="1">
+       <widget class="QLabel" name="tokenLabel">
+        <property name="text">
+         <string>Token: Not Found</string>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
        <widget class="QLabel" name="statusLabelText">
         <property name="text">
          <string>Status:</string>
         </property>
        </widget>
       </item>
-      <item row="5" column="1">
+      <item row="1" column="1">
        <widget class="QLabel" name="statusLabel">
         <property name="text">
          <string>Disconnected</string>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QPushButton" name="refreshConnectionButton">
+        <property name="text">
+         <string>Refresh Connection</string>
         </property>
        </widget>
       </item>
@@ -146,11 +160,6 @@
    <container>1</container>
   </customwidget>
   <customwidget>
-   <class>qMRMLNodeComboBox</class>
-   <extends>QWidget</extends>
-   <header>qMRMLNodeComboBox.h</header>
-  </customwidget>
-  <customwidget>
    <class>qMRMLSegmentEditorWidget</class>
    <extends>QWidget</extends>
    <header>qMRMLSegmentEditorWidget.h</header>
@@ -160,3 +169,4 @@
  <resources/>
  <connections/>
 </ui>
+

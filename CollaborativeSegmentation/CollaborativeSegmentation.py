@@ -200,6 +200,14 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         return False
 
     def onJoinSessionClicked(self):
+        selectedItems = self.ui.projectsList.selectedItems()
+        selectedItem = selectedItems[0] 
+
+        session_id = selectedItem.data(0, qt.Qt.UserRole)
+        slicer.app.settings().setValue("SlicerConnectActiveSession", session_id)
+        slicer.app.settings().sync()
+
+        slicer.util.selectModule("SlicerConnectEditor")
         return
 
     def format_date(self, date_str):
@@ -219,75 +227,6 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
                 return f"{project['locked_by_username']}"
             return "Locked"
         return "Active"
-
-
-    def _connectToSession(self, session_id):
-        """Connect to WebSocket for collaborative session"""
-        # Create WebSocket client
-        self.ws_client = CollaborationWebSocketClient(
-            self.api_client.base_url.replace("http", "ws"),
-            session_id,
-            self.api_client.token,
-            self.logic
-        )
-        
-        # Set up callbacks
-        self.ws_client.on_user_joined = self._onUserJoined
-        self.ws_client.on_user_left = self._onUserLeft
-        self.ws_client.on_delta_received = self._onDeltaReceived
-        self.ws_client.on_session_ended = self._onSessionEnded
-        
-        # Connect
-        self.ws_client.connect()
-        
-        # Show session UI
-        self._showSessionUI()
-    
-    def _showSessionUI(self):
-        """Show the active session UI"""
-        self.sessionGroup.setVisible(True)
-        self.projectGroup.setEnabled(False)
-        
-        # Update session info
-        session_name = self.current_session.get('session_name', 'Unnamed Session')
-        self.sessionInfoLabel.setText(
-            f"<b>{session_name}</b><br>"
-            f"Segmentation: {self.current_segmentation.get('name', 'Unknown')}"
-        )
-        
-        # Generate and display session link
-        session_link = f"collab://session/{self.current_session['session_id']}?token={self.api_client.token}"
-        self.sessionLinkEdit.setText(session_link)
-    
-    def _hideSessionUI(self):
-        """Hide the active session UI"""
-        self.sessionGroup.setVisible(False)
-        self.projectGroup.setEnabled(True)
-        self.activeUsersList.clear()
-        self.current_session = None
-    
-    def _onUserJoined(self, username):
-        """Handle user joined event"""
-        self.activeUsersList.addItem(f"👤 {username}")
-    
-    def _onUserLeft(self, username):
-        """Handle user left event"""
-        items = self.activeUsersList.findItems(f"👤 {username}", qt.Qt.MatchExactly)
-        for item in items:
-            self.activeUsersList.takeItem(self.activeUsersList.row(item))
-    
-    def _onDeltaReceived(self, delta, username):
-        """Handle delta received from another user"""
-        # Logic will apply the delta to the segmentation
-        pass
-    
-    def _onSessionEnded(self):
-        """Handle session ended event"""
-        slicer.util.infoDisplay("Session has been ended by the host")
-        self._hideSessionUI()
-        if self.ws_client:
-            self.ws_client.disconnect()
-            self.ws_client = None
 
 
 class CollaborativeSegmentationLogic(ScriptedLoadableModuleLogic):

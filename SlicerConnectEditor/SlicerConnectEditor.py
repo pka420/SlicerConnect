@@ -40,6 +40,7 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.segmentationNode = None
         self.observerTags = []
         self.ui = None
+        self.sessionId = None
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
@@ -50,14 +51,13 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
         self.setupConnections()
-        
         self.setupSegmentEditor()
+        
+        self.checkAndConnectFromSession()
 
     def setupConnections(self):
-        self.ui.refreshConnectionButton.clicked.connect(self.onConnect)
-        token = slicer.app.settings().value('SlicerConnectToken')
-        tokenStatus = "Found" if token else "Not Found"
-        self.ui.tokenLabel.setText(tokenStatus)
+        self.ui.refreshConnectionButton.clicked.connect(self.onRefreshConnection)
+        self.updateTokenStatus()
 
     def setupSegmentEditor(self):
         self.ui.editorWidget.setMaximumNumberOfUndoStates(10)
@@ -76,42 +76,76 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         
         self.ui.editorWidget.setMRMLSegmentEditorNode(self.segment_editor_node)
 
-    def cleanup(self):
-        self.removeObservers()
-        if self.logic:
-            self.logic.disconnect()
+    def updateTokenStatus(self):
+        """Update the token status label"""
+        token = slicer.app.settings().value('SlicerConnectToken')
+        if token:
+            self.ui.tokenLabel.setText("Token: Found")
+        else:
+            self.ui.tokenLabel.setText("Token: Not Found")
 
-    def onConnect(self):
-        sessionId = self.ui.sessionIdSpinBox.value
-        baseUrl = self.ui.wsUrlLineEdit.text
+    def checkAndConnectFromSession(self):
+        """Check if a session ID was passed and auto-connect"""
+        sessionId = slicer.app.settings().value('SlicerConnectSessionId')
+        if sessionId:
+            try:
+                self.sessionId = int(sessionId)
+                self.addLog(f"Session ID {self.sessionId} received from previous module")
+                self.connectToSession(self.sessionId)
+            except (ValueError, TypeError):
+                self.addLog("ERROR: Invalid session ID received")
+
+    def connectToSession(self, sessionId):
+        """Connect to a specific session"""
+        self.sessionId = sessionId
         
         token = slicer.app.settings().value('SlicerConnectToken')
         if not token:
-            slicer.util.errorDisplay("Authentication token not found. Please login first.")
-            self.addLog("ERROR: No authentication token found")
+            self.promptLogin()
             return
 
         self.addLog(f"Connecting to session {sessionId}...")
-        success = self.logic.connect(baseUrl, sessionId, token)
+        success = self.logic.connect(sessionId, token)
         
         if success:
             self.ui.statusLabel.setText(f"Connected to Session {sessionId}")
-            self.ui.connectButton.setEnabled(False)
-            self.ui.disconnectButton.setEnabled(True)
-            self.ui.wsUrlLineEdit.setEnabled(False)
-            self.ui.sessionIdSpinBox.setEnabled(False)
             self.addLog("Connected successfully")
         else:
             self.ui.statusLabel.setText("Connection Failed")
             self.addLog("ERROR: Connection failed")
 
+    def promptLogin(self):
+        """Show dialog prompting user to login and redirect to login module"""
+        msgBox = qt.QMessageBox()
+        msgBox.setIcon(qt.QMessageBox.Warning)
+        msgBox.setText("Authentication Required")
+        msgBox.setInformativeText("No authentication token found. Please login first.")
+        msgBox.setStandardButtons(qt.QMessageBox.Ok)
+        msgBox.exec_()
+        
+        self.addLog("Redirecting to login module...")
+        
+        try:
+            slicer.util.selectModule('SlicerConnectLogin')
+        except:
+            self.addLog("ERROR: SlicerConnectLogin module not found")
+
+    def onRefreshConnection(self):
+        """Refresh the connection status and token"""
+        self.updateTokenStatus()
+        
+        if self.logic.connected:
+            self.addLog("Already connected")
+            return
+        
+        if self.sessionId:
+            self.connectToSession(self.sessionId)
+        else:
+            self.addLog("No session ID available. Please select a project first.")
+
     def onDisconnect(self):
         self.logic.disconnect()
         self.ui.statusLabel.setText("Disconnected")
-        self.ui.connectButton.setEnabled(True)
-        self.ui.disconnectButton.setEnabled(False)
-        self.ui.wsUrlLineEdit.setEnabled(True)
-        self.ui.sessionIdSpinBox.setEnabled(True)
         self.ui.syncCheckBox.setChecked(False)
         self.addLog("Disconnected")
 
@@ -155,6 +189,11 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.ui.logTextEdit.append(f"[{timestamp}] {message}")
 
+    def cleanup(self):
+        self.removeObservers()
+        if self.logic:
+            self.logic.disconnect()
+
     def resourcePath(self, filename):
         scriptedModulesPath = os.path.dirname(slicer.util.modulePath(self.moduleName))
         return os.path.join(scriptedModulesPath, 'Resources', filename)
@@ -173,15 +212,12 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         self.connectedUsers = 0
         self.isUpdating = False
         self.connected = False
+        self.WS_BASE_URL = "ws://localhost:8000/collaboration/sessions"
 
-    def connect(self, baseUrl, sessionId, token):
+    def connect(self, sessionId, token):
+        """Connect to WebSocket server with session ID and token"""
         try:
-            wsUrl = f"{baseUrl.rstrip('/')}"
-            if "/ws" not in wsUrl:
-                wsUrl = f"{baseUrl.rstrip('/')}/ws"
-            
-            wsUrl = wsUrl.replace("/sessions/1/", f"/sessions/{sessionId}/")
-            wsUrl = f"{wsUrl}?token={token}"
+            wsUrl = f"{self.WS_BASE_URL}/{sessionId}/?token={token}"
             
             print(f"Connecting to: {wsUrl}")
             
@@ -257,11 +293,11 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             elif msgType == "user_joined":
                 print(f"User joined: {data.get('userId')}")
                 self.connectedUsers = data.get("totalUsers", 0)
+            elif msgType == "user_list":
+                self.connectedUsers = len(data.get("users", []))
             elif msgType == "user_left":
                 print(f"User left: {data.get('userId')}")
                 self.connectedUsers = data.get("totalUsers", 0)
-            elif msgType == "user_list":
-                self.connectedUsers = len(data.get("users", []))
             elif msgType == "error":
                 print(f"Server error: {data.get('message')}")
         except Exception as e:
@@ -385,3 +421,65 @@ class SlicerConnectEditorTest(ScriptedLoadableModuleTest):
         segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
         logic.setSegmentationNode(segmentationNode)
         self.delayDisplay('Test passed!')
+
+
+    def _connectToSession(self, session_id):
+        """Connect to WebSocket for collaborative session"""
+        self.ws_client = CollaborationWebSocketClient(
+            self.api_client.base_url.replace("http", "ws"),
+            session_id,
+            self.api_client.token,
+            self.logic
+        )
+        
+        self.ws_client.on_user_joined = self._onUserJoined
+        self.ws_client.on_user_left = self._onUserLeft
+        self.ws_client.on_delta_received = self._onDeltaReceived
+        self.ws_client.on_session_ended = self._onSessionEnded
+        
+        self.ws_client.connect()
+        
+        self._showSessionUI()
+    
+    def _showSessionUI(self):
+        """Show the active session UI"""
+        self.sessionGroup.setVisible(True)
+        self.projectGroup.setEnabled(False)
+        
+        session_name = self.current_session.get('session_name', 'Unnamed Session')
+        self.sessionInfoLabel.setText(
+            f"<b>{session_name}</b><br>"
+            f"Segmentation: {self.current_segmentation.get('name', 'Unknown')}"
+        )
+        
+        session_link = f"collab://session/{self.current_session['session_id']}?token={self.api_client.token}"
+        self.sessionLinkEdit.setText(session_link)
+    
+    def _hideSessionUI(self):
+        """Hide the active session UI"""
+        self.sessionGroup.setVisible(False)
+        self.projectGroup.setEnabled(True)
+        self.activeUsersList.clear()
+        self.current_session = None
+    
+    def _onUserJoined(self, username):
+        """Handle user joined event"""
+        self.activeUsersList.addItem(f"👤 {username}")
+    
+    def _onUserLeft(self, username):
+        """Handle user left event"""
+        items = self.activeUsersList.findItems(f"👤 {username}", qt.Qt.MatchExactly)
+        for item in items:
+            self.activeUsersList.takeItem(self.activeUsersList.row(item))
+    
+    def _onDeltaReceived(self, delta, username):
+        """Handle delta received from another user"""
+        pass
+    
+    def _onSessionEnded(self):
+        """Handle session ended event"""
+        slicer.util.infoDisplay("Session has been ended by the host")
+        self._hideSessionUI()
+        if self.ws_client:
+            self.ws_client.disconnect()
+            self.ws_client = None
