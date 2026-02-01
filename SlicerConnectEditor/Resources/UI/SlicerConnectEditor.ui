@@ -20,20 +20,6 @@
       <string>Connection Settings</string>
      </property>
      <layout class="QFormLayout" name="connectionLayout">
-      <item row="0" column="0">
-       <widget class="QLabel" name="tokenLabelText">
-        <property name="text">
-         <string>Authentication:</string>
-        </property>
-       </widget>
-      </item>
-      <item row="0" column="1">
-       <widget class="QLabel" name="tokenLabel">
-        <property name="text">
-         <string>Token: Not Found</string>
-        </property>
-       </widget>
-      </item>
       <item row="1" column="0">
        <widget class="QLabel" name="statusLabelText">
         <property name="text">

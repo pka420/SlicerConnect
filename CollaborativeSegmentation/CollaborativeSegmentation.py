@@ -204,7 +204,7 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         selectedItem = selectedItems[0] 
 
         session_id = selectedItem.data(0, qt.Qt.UserRole)
-        slicer.app.settings().setValue("SlicerConnectActiveSession", session_id)
+        slicer.app.settings().setValue("SlicerConnectSessionId", session_id)
         slicer.app.settings().sync()
 
         slicer.util.selectModule("SlicerConnectEditor")

@@ -7,6 +7,8 @@ from slicer.util import VTKObservationMixin
 import numpy as np
 import json
 import base64
+import hashlib
+from datetime import datetime, timezone
 
 try:
     from websocket import WebSocketApp
@@ -25,7 +27,7 @@ class SlicerConnectEditor(ScriptedLoadableModule):
         self.parent.dependencies = []
         self.parent.contributors = ["Your Name"]
         self.parent.helpText = """
-Real-time multi-user segmentation collaboration using WebSocket and OpenIGTLink.
+Real-time multi-user segmentation collaboration using WebSocket with delta updates.
 """
         self.parent.acknowledgementText = """
 Developed for collaborative medical image segmentation.
@@ -41,6 +43,11 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.observerTags = []
         self.ui = None
         self.sessionId = None
+        
+        # Timer to check for segmentation node changes
+        self.checkTimer = qt.QTimer()
+        self.checkTimer.setInterval(500)
+        self.checkTimer.timeout.connect(self.checkSegmentationNode) 
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
@@ -50,16 +57,14 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
-        self.setupConnections()
+        self.ui.refreshConnectionButton.clicked.connect(self.checkAndConnectFromSession)
         self.setupSegmentEditor()
         
+        self.checkTimer.start()
         self.checkAndConnectFromSession()
 
-    def setupConnections(self):
-        self.ui.refreshConnectionButton.clicked.connect(self.onRefreshConnection)
-        self.updateTokenStatus()
-
     def setupSegmentEditor(self):
+        """Setup segment editor with real-time modification tracking"""
         self.ui.editorWidget.setMaximumNumberOfUndoStates(10)
         self.ui.editorWidget.setMRMLScene(slicer.mrmlScene)
         
@@ -75,14 +80,12 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             self.segment_editor_node = slicer.mrmlScene.AddNode(self.segment_editor_node)
         
         self.ui.editorWidget.setMRMLSegmentEditorNode(self.segment_editor_node)
-
-    def updateTokenStatus(self):
-        """Update the token status label"""
-        token = slicer.app.settings().value('SlicerConnectToken')
-        if token:
-            self.ui.tokenLabel.setText("Token: Found")
-        else:
-            self.ui.tokenLabel.setText("Token: Not Found")
+        
+        self.addObserver(
+            self.segment_editor_node,
+            vtk.vtkCommand.ModifiedEvent,
+            self.onSegmentEditorNodeModified
+        )
 
     def checkAndConnectFromSession(self):
         """Check if a session ID was passed and auto-connect"""
@@ -94,6 +97,13 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 self.connectToSession(self.sessionId)
             except (ValueError, TypeError):
                 self.addLog("ERROR: Invalid session ID received")
+        else:
+            qt.QMessageBox.warning(
+                slicer.util.mainWindow(),
+                "No Session Detected",
+                "Select a project first."
+            )
+            slicer.util.selectModule("CollaborativeSegmentation")
 
     def connectToSession(self, sessionId):
         """Connect to a specific session"""
@@ -110,6 +120,7 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         if success:
             self.ui.statusLabel.setText(f"Connected to Session {sessionId}")
             self.addLog("Connected successfully")
+            self.addLog("Delta-based sync enabled - only changes are sent")
         else:
             self.ui.statusLabel.setText("Connection Failed")
             self.addLog("ERROR: Connection failed")
@@ -130,71 +141,97 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         except:
             self.addLog("ERROR: SlicerConnectLogin module not found")
 
-    def onRefreshConnection(self):
-        """Refresh the connection status and token"""
-        self.updateTokenStatus()
-        
-        if self.logic.connected:
-            self.addLog("Already connected")
-            return
-        
-        if self.sessionId:
-            self.connectToSession(self.sessionId)
-        else:
-            self.addLog("No session ID available. Please select a project first.")
-
     def onDisconnect(self):
+        self.removeObservers()
         self.logic.disconnect()
         self.ui.statusLabel.setText("Disconnected")
-        self.ui.syncCheckBox.setChecked(False)
         self.addLog("Disconnected")
 
+    def checkSegmentationNode(self):
+        """Periodically check if the segmentation node has changed"""
+        if self.segment_editor_node:
+            currentSegmentationNode = self.segment_editor_node.GetSegmentationNode()
+            
+            if currentSegmentationNode != self.segmentationNode:
+                self.onSegmentationSelected(currentSegmentationNode)
+    
+    def onSegmentEditorNodeModified(self, caller, event):
+        """Called when segment editor node is modified"""
+        if self.segment_editor_node:
+            currentSegmentationNode = self.segment_editor_node.GetSegmentationNode()
+            
+            if currentSegmentationNode != self.segmentationNode:
+                self.onSegmentationSelected(currentSegmentationNode)
+    
     def onSegmentationSelected(self, node):
+        """Handle segmentation node selection and setup real-time observers"""
         if self.segmentationNode:
-            self.removeObservers()
+            try:
+                self.removeObserver(self.segmentationNode, vtk.vtkCommand.ModifiedEvent, self.onSegmentationModified)
+                if self.segmentationNode.GetSegmentation():
+                    self.removeObserver(self.segmentationNode.GetSegmentation(), vtk.vtkCommand.ModifiedEvent, self.onSegmentationModified)
+                    self.removeObserver(self.segmentationNode.GetSegmentation(), slicer.vtkSegmentation.RepresentationModified, self.onSegmentationModified)
+            except:
+                pass
         
         self.segmentationNode = node
         self.logic.setSegmentationNode(node)
-        self.ui.editorWidget.setSegmentationNode(node)
         
-        if node and self.ui.syncCheckBox.isChecked():
-            self.addObserver(node, vtk.vtkCommand.ModifiedEvent, self.onSegmentationModified)
-
-    def onSyncChanged(self, state):
-        if state and self.segmentationNode:
+        if node:
+            self.addLog(f"Segmentation selected: {node.GetName()}")
+            
             self.addObserver(
-                self.segmentationNode, 
-                vtk.vtkCommand.ModifiedEvent, 
+                node,
+                vtk.vtkCommand.ModifiedEvent,
                 self.onSegmentationModified
             )
-            self.logic.setUserId(self.ui.userIdLineEdit.text)
-            self.logic.enableSync(True)
-            self.addLog("Sync enabled")
+            
+            segmentation = node.GetSegmentation()
+            if segmentation:
+                self.addObserver(
+                    segmentation,
+                    vtk.vtkCommand.ModifiedEvent,
+                    self.onSegmentationModified
+                )
+                
+                self.addObserver(
+                    segmentation,
+                    slicer.vtkSegmentation.RepresentationModified,
+                    self.onSegmentationModified
+                )
+            
+            self.addLog("Real-time delta sync observers added")
         else:
-            self.removeObservers()
-            self.logic.enableSync(False)
-            self.addLog("Sync disabled")
+            self.addLog("No segmentation selected")
 
     def onSegmentationModified(self, caller, event):
-        if self.logic.isSyncEnabled():
-            self.logic.sendSegmentationUpdate()
+        """Called whenever segmentation is modified"""
+        if self.logic.connected and not self.logic.isUpdating:
+            self.logic.sendSegmentationDelta()
+            self.updateUI()
 
     def updateUI(self):
+        """Update UI statistics"""
         self.ui.sentLabel.setText(str(self.logic.sentCount))
         self.ui.receivedLabel.setText(str(self.logic.receivedCount))
         self.ui.connectedUsersLabel.setText(str(self.logic.connectedUsers))
 
     def addLog(self, message):
+        """Add timestamped log message"""
         import datetime
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
         self.ui.logTextEdit.append(f"[{timestamp}] {message}")
 
     def cleanup(self):
+        """Cleanup when module is closed"""
+        if self.checkTimer:
+            self.checkTimer.stop()
         self.removeObservers()
         if self.logic:
             self.logic.disconnect()
 
     def resourcePath(self, filename):
+        """Get path to resource file"""
         scriptedModulesPath = os.path.dirname(slicer.util.modulePath(self.moduleName))
         return os.path.join(scriptedModulesPath, 'Resources', filename)
 
@@ -205,7 +242,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         self.ws = None
         self.wsThread = None
         self.segmentationNode = None
-        self.syncEnabled = False
         self.userId = "User1"
         self.sentCount = 0
         self.receivedCount = 0
@@ -213,11 +249,20 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         self.isUpdating = False
         self.connected = False
         self.WS_BASE_URL = "ws://localhost:8000/collaboration/sessions"
+        
+        # Delta tracking
+        self.previousSegmentation = None
+        self.baselineHash = None
+        
+        # IGT Link configuration
+        self.igtlConnectorNode = None
+        self.igtlServerPort = 18944
+        self.useIGTLink = False  # Disabled for delta mode
 
     def connect(self, sessionId, token):
         """Connect to WebSocket server with session ID and token"""
         try:
-            wsUrl = f"{self.WS_BASE_URL}/{sessionId}/?token={token}"
+            wsUrl = f"{self.WS_BASE_URL}/{sessionId}/ws?token={token}"
             
             print(f"Connecting to: {wsUrl}")
             
@@ -248,48 +293,56 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             return False
 
     def disconnect(self):
-        self.syncEnabled = False
+        """Disconnect from WebSocket"""
         self.connected = False
+        
         if self.ws:
             self.ws.close()
             self.ws = None
         if self.wsThread:
             self.wsThread.join(timeout=2)
             self.wsThread = None
+        
         self.sentCount = 0
         self.receivedCount = 0
         self.connectedUsers = 0
+        self.previousSegmentation = None
+        self.baselineHash = None
 
     def setSegmentationNode(self, node):
+        """Set the segmentation node to monitor"""
         self.segmentationNode = node
+        self.previousSegmentation = None
+        self.baselineHash = None
 
     def setUserId(self, userId):
+        """Set user ID for identification"""
         self.userId = userId
 
-    def enableSync(self, enabled):
-        self.syncEnabled = enabled
-
-    def isSyncEnabled(self):
-        return self.syncEnabled and self.connected and self.segmentationNode
-
     def onWsOpen(self, ws):
+        """Handle WebSocket connection opened"""
         print("WebSocket connection opened")
         self.connected = True
+        
+        # Request full segmentation state from server
         joinMessage = {
             "type": "join",
             "userId": self.userId,
-            "timestamp": self.getCurrentTimestamp()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
         ws.send(json.dumps(joinMessage))
 
     def onWsMessage(self, ws, message):
+        """Handle incoming WebSocket messages"""
         try:
             data = json.loads(message)
             msgType = data.get("type")
             print(f"Received message type: {msgType}")
             
-            if msgType == "segmentation_update":
-                self.handleSegmentationUpdate(data)
+            if msgType == "segmentation_delta":
+                self.handleSegmentationDelta(data)
+            elif msgType == "segmentation_full":
+                self.handleFullSegmentation(data)
             elif msgType == "user_joined":
                 print(f"User joined: {data.get('userId')}")
                 self.connectedUsers = data.get("totalUsers", 0)
@@ -304,59 +357,227 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             print(f"Error processing message: {str(e)}")
 
     def onWsError(self, ws, error):
+        """Handle WebSocket errors"""
         print(f"WebSocket error: {error}")
         self.connected = False
 
     def onWsClose(self, ws, closeStatusCode, closeMsg):
+        """Handle WebSocket connection closed"""
         print(f"WebSocket closed: {closeStatusCode} - {closeMsg}")
         self.connected = False
 
-    def sendSegmentationUpdate(self):
-        if not self.isSyncEnabled() or self.isUpdating:
+    def getCurrentSegmentationArray(self):
+        """Get current segmentation as numpy array with segment ID mapping"""
+        if not self.segmentationNode:
+            return None, "No segmentation node available"
+        
+        try:
+            labelmapNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLLabelMapVolumeNode')
+            slicer.modules.segmentations.logic().ExportVisibleSegmentsToLabelmapNode(
+                self.segmentationNode, labelmapNode
+            )
+            
+            labelArray = slicer.util.arrayFromVolume(labelmapNode)
+            dims = labelArray.shape
+            
+            spacing = list(labelmapNode.GetSpacing())
+            origin = list(labelmapNode.GetOrigin())
+            
+            slicer.mrmlScene.RemoveNode(labelmapNode)
+            
+            segmentMapping = {}
+            segmentation = self.segmentationNode.GetSegmentation()
+            for i in range(segmentation.GetNumberOfSegments()):
+                segmentId = segmentation.GetNthSegmentID(i)
+                segmentName = segmentation.GetNthSegment(i).GetName()
+                labelValue = i + 1
+                segmentMapping[str(labelValue)] = segmentName
+            
+            presentLabels = [str(label) for label in np.unique(labelArray) if label > 0]
+            filteredMapping = {k: segmentMapping[k] for k in presentLabels if k in segmentMapping}
+
+        except Exception as e:
+            return None, str(e)
+        
+        message = {
+            'array': labelArray,  
+            'dimensions': dims,
+            'spacing': spacing,
+            'origin': origin,
+            'segmentNames': filteredMapping, 
+            'dtype': str(labelArray.dtype)
+        }
+
+        print(message)
+
+        return message, None
+
+    def sendSegmentationDelta(self):
+        """Send only the changed voxels since last update"""
+        if self.isUpdating or not self.segmentationNode:
+            return
+        
+        try:
+            current, err = self.getCurrentSegmentationArray()
+            if err is not None or current is None:
+                print('error while converting to labelmapNode', e)
+                return
+            
+            currentArray = current['array']
+            
+            if self.previousSegmentation is None:
+                print("Sending initial full segmentation")
+                self.sendFullSegmentation(current)
+                self.previousSegmentation = currentArray.copy()
+                return
+            
+            changedMask = currentArray != self.previousSegmentation
+            
+            if not np.any(changedMask):
+                print("No changes detected, skipping update")
+                return
+            
+            changedIndices = np.argwhere(changedMask)
+            changedValues = currentArray[changedMask]
+            
+            numChanged = len(changedIndices)
+            totalVoxels = currentArray.size
+            changePercent = (numChanged / totalVoxels) * 100
+            
+            print(f"Changed voxels: {numChanged}/{totalVoxels} ({changePercent:.2f}%)")
+            
+            if changePercent > 30:
+                print("Large change detected, sending full segmentation")
+                self.sendFullSegmentation(current)
+                self.previousSegmentation = currentArray.copy()
+                return
+            
+            import zlib
+            
+            indicesBytes = changedIndices.astype(np.uint16).tobytes()
+            valuesBytes = changedValues.tobytes()
+            
+            compressedIndices = zlib.compress(indicesBytes)
+            compressedValues = zlib.compress(valuesBytes)
+            
+            encodedIndices = base64.b64encode(compressedIndices).decode('utf-8')
+            encodedValues = base64.b64encode(compressedValues).decode('utf-8')
+            
+            message = {
+                "type": "segmentation_delta",
+                "userId": self.userId,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "indices": encodedIndices,
+                    "values": encodedValues,
+                    "numChanges": numChanged,
+                    "dimensions": current['dimensions'],
+                    "spacing": current['spacing'],
+                    "origin": current['origin'],
+                    "dataType": current['dtype']
+                }
+            }
+            
+            if self.ws and self.connected:
+                self.ws.send(json.dumps(message))
+                self.sentCount += 1
+                print(f"Sent delta update #{self.sentCount} ({numChanged} voxels)")
+            
+            # Update previous state
+            self.previousSegmentation = currentArray.copy()
+            
+        except Exception as e:
+            print(f"ERROR sending delta: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def sendFullSegmentation(self, current):
+        """Send full segmentation (used for initial sync or large changes)"""
+        try:
+            import zlib
+            compressor = zlib.compressobj(
+                level=zlib.Z_DEFAULT_COMPRESSION, 
+                method=zlib.DEFLATED, 
+                wbits=15, 
+                memLevel=8, 
+                strategy=zlib.Z_RLE
+            )
+            compressedData = compressor.compress(current['array'].tobytes())
+            compressedData += compressor.flush()
+            encodedData = base64.b64encode(compressedData).decode('utf-8')
+            
+            message = {
+                "type": "segmentation_full",
+                "userId": self.userId,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "data": {
+                    "imageData": encodedData,
+                    "dimensions": current['dimensions'],
+                    "spacing": current['spacing'],
+                    "origin": current['origin'],
+                    "dataType": current['dtype']
+                }
+            }
+            
+            if self.ws and self.connected:
+                self.ws.send(json.dumps(message))
+                self.sentCount += 1
+                print(f"Sent full segmentation #{self.sentCount}")
+                
+        except Exception as e:
+            print(f"ERROR sending full segmentation: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def handleSegmentationDelta(self, data):
+        """Handle incoming delta update"""
+        print('in handling delta')
+        if not self.segmentationNode or self.isUpdating:
+            return
+
+        if data.get("userId") == self.userId:
             return
 
         try:
-            labelmapNode = slicer.vtkMRMLLabelMapVolumeNode()
-            slicer.mrmlScene.AddNode(labelmapNode)
-            slicer.modules.segmentations.logic().ExportAllSegmentsToLabelmapNode(
-                self.segmentationNode, labelmapNode
-            )
-
-            imageData = labelmapNode.GetImageData()
-            from vtk.util import numpy_support
-            arrayData = numpy_support.vtk_to_numpy(imageData.GetPointData().GetScalars())
-            dims = imageData.GetDimensions()
-            arrayData = arrayData.reshape(dims[2], dims[1], dims[0])
-
-            spacing = labelmapNode.GetSpacing()
-            origin = labelmapNode.GetOrigin()
-
+            self.isUpdating = True
+            deltaData = data.get("data", {})
+            
             import zlib
-            compressedData = zlib.compress(arrayData.tobytes())
-            encodedData = base64.b64encode(compressedData).decode('utf-8')
-
-            message = {
-                "type": "segmentation_update",
-                "userId": self.userId,
-                "timestamp": self.getCurrentTimestamp(),
-                "data": {
-                    "imageData": encodedData,
-                    "dimensions": list(dims),
-                    "spacing": list(spacing),
-                    "origin": list(origin),
-                    "dataType": str(arrayData.dtype)
-                }
-            }
-
-            self.ws.send(json.dumps(message))
-            self.sentCount += 1
-
-            slicer.mrmlScene.RemoveNode(labelmapNode)
-            print(f"Sent segmentation update #{self.sentCount}")
+            
+            compressedIndices = base64.b64decode(deltaData["indices"])
+            compressedValues = base64.b64decode(deltaData["values"])
+            
+            indicesBytes = zlib.decompress(compressedIndices)
+            valuesBytes = zlib.decompress(compressedValues)
+            
+            indices = np.frombuffer(indicesBytes, dtype=np.uint16).reshape(-1, 3)
+            values = np.frombuffer(valuesBytes, dtype=deltaData["dataType"])
+            
+            current = self.getCurrentSegmentationArray()
+            if current is None:
+                print("No current segmentation to apply delta to")
+                return
+            
+            currentArray = current['array']
+            for idx, value in zip(indices, values):
+                currentArray[idx[0], idx[1], idx[2]] = value
+            
+            self.updateSegmentationFromArray(currentArray, current)
+            
+            self.receivedCount += 1
+            print(f"Applied delta update #{self.receivedCount} from {data.get('userId')} ({len(values)} voxels)")
+            
+            self.previousSegmentation = currentArray.copy()
+            
         except Exception as e:
-            print(f"Error sending segmentation: {str(e)}")
+            print(f"Error applying delta: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self.isUpdating = False
 
-    def handleSegmentationUpdate(self, data):
+    def handleFullSegmentation(self, data):
+        """Handle incoming full segmentation"""
         if not self.segmentationNode or self.isUpdating:
             return
 
@@ -366,46 +587,52 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         try:
             self.isUpdating = True
             updateData = data.get("data", {})
-
+            
             import zlib
             encodedData = updateData.get("imageData")
             compressedData = base64.b64decode(encodedData)
             decompressedData = zlib.decompress(compressedData)
-
+            
             dims = updateData.get("dimensions")
             dataType = updateData.get("dataType")
             arrayData = np.frombuffer(decompressedData, dtype=dataType)
             arrayData = arrayData.reshape(dims[2], dims[1], dims[0])
-
-            labelmapNode = slicer.vtkMRMLLabelMapVolumeNode()
-            slicer.mrmlScene.AddNode(labelmapNode)
-            labelmapNode.SetName(f"ReceivedSegmentation_{data.get('userId')}")
-
-            from vtk.util import numpy_support
-            vtkArray = numpy_support.numpy_to_vtk(arrayData.ravel(), deep=True)
-            imageData = vtk.vtkImageData()
-            imageData.SetDimensions(dims)
-            imageData.GetPointData().SetScalars(vtkArray)
-            labelmapNode.SetAndObserveImageData(imageData)
-            labelmapNode.SetSpacing(updateData.get("spacing"))
-            labelmapNode.SetOrigin(updateData.get("origin"))
-
-            slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-                labelmapNode, self.segmentationNode
-            )
+            
+            # Update segmentation
+            self.updateSegmentationFromArray(arrayData, updateData)
+            
             self.receivedCount += 1
-            print(f"Received segmentation update #{self.receivedCount} from {data.get('userId')}")
-
-            slicer.mrmlScene.RemoveNode(labelmapNode)
-            self.isUpdating = False
+            print(f"Applied full segmentation #{self.receivedCount} from {data.get('userId')}")
+            
+            # Update our previous state
+            self.previousSegmentation = arrayData.copy()
+            
         except Exception as e:
+            print(f"Error applying full segmentation: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
             self.isUpdating = False
-            print(f"Error receiving segmentation: {str(e)}")
 
-    def getCurrentTimestamp(self):
-        import time
-        return int(time.time() * 1000)
-
+    def updateSegmentationFromArray(self, arrayData, metadata):
+        """Update segmentation node from numpy array"""
+        labelmapNode = slicer.vtkMRMLLabelMapVolumeNode()
+        slicer.mrmlScene.AddNode(labelmapNode)
+        
+        from vtk.util import numpy_support
+        vtkArray = numpy_support.numpy_to_vtk(arrayData.ravel(), deep=True)
+        imageData = vtk.vtkImageData()
+        imageData.SetDimensions(metadata["dimensions"])
+        imageData.GetPointData().SetScalars(vtkArray)
+        labelmapNode.SetAndObserveImageData(imageData)
+        labelmapNode.SetSpacing(metadata["spacing"])
+        labelmapNode.SetOrigin(metadata["origin"])
+        
+        slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+            labelmapNode, self.segmentationNode
+        )
+        
+        slicer.mrmlScene.RemoveNode(labelmapNode)
 
 class SlicerConnectEditorTest(ScriptedLoadableModuleTest):
     def setUp(self):
@@ -422,64 +649,3 @@ class SlicerConnectEditorTest(ScriptedLoadableModuleTest):
         logic.setSegmentationNode(segmentationNode)
         self.delayDisplay('Test passed!')
 
-
-    def _connectToSession(self, session_id):
-        """Connect to WebSocket for collaborative session"""
-        self.ws_client = CollaborationWebSocketClient(
-            self.api_client.base_url.replace("http", "ws"),
-            session_id,
-            self.api_client.token,
-            self.logic
-        )
-        
-        self.ws_client.on_user_joined = self._onUserJoined
-        self.ws_client.on_user_left = self._onUserLeft
-        self.ws_client.on_delta_received = self._onDeltaReceived
-        self.ws_client.on_session_ended = self._onSessionEnded
-        
-        self.ws_client.connect()
-        
-        self._showSessionUI()
-    
-    def _showSessionUI(self):
-        """Show the active session UI"""
-        self.sessionGroup.setVisible(True)
-        self.projectGroup.setEnabled(False)
-        
-        session_name = self.current_session.get('session_name', 'Unnamed Session')
-        self.sessionInfoLabel.setText(
-            f"<b>{session_name}</b><br>"
-            f"Segmentation: {self.current_segmentation.get('name', 'Unknown')}"
-        )
-        
-        session_link = f"collab://session/{self.current_session['session_id']}?token={self.api_client.token}"
-        self.sessionLinkEdit.setText(session_link)
-    
-    def _hideSessionUI(self):
-        """Hide the active session UI"""
-        self.sessionGroup.setVisible(False)
-        self.projectGroup.setEnabled(True)
-        self.activeUsersList.clear()
-        self.current_session = None
-    
-    def _onUserJoined(self, username):
-        """Handle user joined event"""
-        self.activeUsersList.addItem(f"👤 {username}")
-    
-    def _onUserLeft(self, username):
-        """Handle user left event"""
-        items = self.activeUsersList.findItems(f"👤 {username}", qt.Qt.MatchExactly)
-        for item in items:
-            self.activeUsersList.takeItem(self.activeUsersList.row(item))
-    
-    def _onDeltaReceived(self, delta, username):
-        """Handle delta received from another user"""
-        pass
-    
-    def _onSessionEnded(self):
-        """Handle session ended event"""
-        slicer.util.infoDisplay("Session has been ended by the host")
-        self._hideSessionUI()
-        if self.ws_client:
-            self.ws_client.disconnect()
-            self.ws_client = None
