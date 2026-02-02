@@ -44,11 +44,6 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui = None
         self.sessionId = None
         
-        # Timer to check for segmentation node changes
-        self.checkTimer = qt.QTimer()
-        self.checkTimer.setInterval(500)
-        self.checkTimer.timeout.connect(self.checkSegmentationNode) 
-
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
         self.logic = SlicerConnectEditorLogic()
@@ -60,7 +55,6 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui.refreshConnectionButton.clicked.connect(self.checkAndConnectFromSession)
         self.setupSegmentEditor()
         
-        self.checkTimer.start()
         self.checkAndConnectFromSession()
 
     def setupSegmentEditor(self):
@@ -224,8 +218,6 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def cleanup(self):
         """Cleanup when module is closed"""
-        if self.checkTimer:
-            self.checkTimer.stop()
         self.removeObservers()
         if self.logic:
             self.logic.disconnect()
@@ -576,35 +568,64 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         finally:
             self.isUpdating = False
 
-    def handleFullSegmentation(self, data):
+    def handleFullSegmentation(self, message):
         """Handle incoming full segmentation"""
-        if not self.segmentationNode or self.isUpdating:
-            return
 
-        if data.get("userId") == self.userId:
+        print('recieved incoming segmentation')
+        # if not self.segmentationNode or self.isUpdating:
+        #     return
+
+        if message.get("userId") == self.userId:
             return
 
         try:
             self.isUpdating = True
-            updateData = data.get("data", {})
+            data = message.get("data", {})
+            print('dtype: ', data.get("dataType"))
             
             import zlib
-            encodedData = updateData.get("imageData")
+            encodedData = data.get("imageData")
             compressedData = base64.b64decode(encodedData)
             decompressedData = zlib.decompress(compressedData)
             
-            dims = updateData.get("dimensions")
-            dataType = updateData.get("dataType")
+            dims = data.get("dimensions")
+            dataType = data.get("dataType")
+            print('decompression done')
             arrayData = np.frombuffer(decompressedData, dtype=dataType)
             arrayData = arrayData.reshape(dims[2], dims[1], dims[0])
+
+            labelmapNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLLabelMapVolumeNode')
+            labelmapNode.SetSpacing(data['spacing'])
+            labelmapNode.SetSpacing(data['origin'])
+
+            slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
+
+            segmentEditor = slicer.modules.segmenteditor.widgetRepresentation().self().editor
+            segmentationNode = segmentEditor.segmentationNode()
+
+            if segmentationNode is not None:
+                print("No segmentation node in editor - creating new one")
+                segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
+                segmentEditor.setSegmentationNode(segmentationNode)
             
-            # Update segmentation
-            self.updateSegmentationFromArray(arrayData, updateData)
+            slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                labelmapNode, 
+                segmentationNode
+            )
+
+            print('import done')
+            
+            #self.updateSegmentNames(segmentationNode, data['segmentNames'])
+            
+            slicer.mrmlScene.RemoveNode(labelmapNode)
+            
+            #segmentationNode.InvokeCustomModifiedEvent(slicer.vtkMRMLSegmentationNode.Modified)
+            
+            #self.updateSegmentationFromArray(arrayData, updateData)
             
             self.receivedCount += 1
-            print(f"Applied full segmentation #{self.receivedCount} from {data.get('userId')}")
+            print(f"Applied full segmentation #{self.receivedCount} from {message.get('userId')}")
             
-            # Update our previous state
             self.previousSegmentation = arrayData.copy()
             
         except Exception as e:
