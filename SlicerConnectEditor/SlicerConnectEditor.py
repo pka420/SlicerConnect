@@ -10,6 +10,9 @@ import base64
 import hashlib
 from datetime import datetime, timezone
 
+from PySide6.QtCore import QTimer, QObject, Signal, QThread
+from PySide6.QtNetwork import QWebSocket
+
 try:
     from websocket import WebSocketApp
     import threading
@@ -227,12 +230,52 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         scriptedModulesPath = os.path.dirname(slicer.util.modulePath(self.moduleName))
         return os.path.join(scriptedModulesPath, 'Resources', filename)
 
+class WebSocketHandler(QObject):
+    messageReceived = Signal(str)
+    connected = Signal()
+    disconnected = Signal()
+    errorOccurred = Signal(str)
+    
+    def __init__(self):
+        super().__init__()
+        self.ws = None
+        
+    def connect(self, url):
+        self.ws = QWebSocket()
+        self.ws.connected.connect(self.onConnected)
+        self.ws.disconnected.connect(self.onDisconnected)
+        self.ws.textMessageReceived.connect(self.onMessage)
+        self.ws.error.connect(self.onError)
+        self.ws.open(url)
+        
+    def onConnected(self):
+        self.connected.emit()
+        
+    def onMessage(self, message):
+        self.messageReceived.emit(message)
+        
+    def onDisconnected(self):
+        self.disconnected.emit()
+        
+    def onError(self):
+        self.errorOccurred.emit(self.ws.errorString())
+        
+    def send(self, message):
+        if self.ws:
+            self.ws.sendTextMessage(message)
+
+    def isConnected(self):
+        return self.connected
+
+            
+    def close(self):
+        if self.ws:
+            self.ws.close()
+
 
 class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
-        self.ws = None
-        self.wsThread = None
         self.segmentationNode = None
         self.userId = "User1"
         self.sentCount = 0
@@ -241,6 +284,12 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         self.isUpdating = False
         self.connected = False
         self.WS_BASE_URL = "ws://localhost:8000/collaboration/sessions"
+
+        self.wsHandler = WebSocketHandler()
+        self.wsHandler.messageReceived.connect(self.onWsMessage)
+        self.wsHandler.connected.connect(self.onWsConnected)
+        self.wsHandler.disconnected.connect(self.onWsDisconnected)
+        self.wsHandler.errorOccurred.connect(self.onWsError)
         
         # Delta tracking
         self.previousSegmentation = None
@@ -253,47 +302,16 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
     def connect(self, sessionId, token):
         """Connect to WebSocket server with session ID and token"""
-        try:
-            wsUrl = f"{self.WS_BASE_URL}/{sessionId}/ws?token={token}"
+        wsUrl = f"{self.WS_BASE_URL}/{sessionId}/ws?token={token}"
+        print(f"Connecting to: {wsUrl}")
+        self.wsHandler.connect(QUrl(wsUrl))
             
-            print(f"Connecting to: {wsUrl}")
-            
-            self.ws = WebSocketApp(
-                wsUrl,
-                on_message=self.onWsMessage,
-                on_error=self.onWsError,
-                on_close=self.onWsClose,
-                on_open=self.onWsOpen
-            )
-            
-            self.wsThread = threading.Thread(target=self.ws.run_forever)
-            self.wsThread.daemon = True
-            self.wsThread.start()
-            
-            import time
-            timeout = 5
-            startTime = time.time()
-            while time.time() - startTime < timeout:
-                if self.connected:
-                    return True
-                time.sleep(0.1)
-            
-            return self.connected
-        except Exception as e:
-            print(f"Connection error: {str(e)}")
-            slicer.util.errorDisplay(f"Connection error: {str(e)}")
-            return False
 
     def disconnect(self):
         """Disconnect from WebSocket"""
         self.connected = False
-        
-        if self.ws:
-            self.ws.close()
-            self.ws = None
-        if self.wsThread:
-            self.wsThread.join(timeout=2)
-            self.wsThread = None
+
+        self.wsHandler.disconnect()
         
         self.sentCount = 0
         self.receivedCount = 0
@@ -324,7 +342,7 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         }
         ws.send(json.dumps(joinMessage))
 
-    def onWsMessage(self, ws, message):
+    def onWsMessage(self, message):
         """Handle incoming WebSocket messages"""
         try:
             data = json.loads(message)
@@ -336,12 +354,12 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             elif msgType == "segmentation_full":
                 self.handleFullSegmentation(data)
             elif msgType == "user_joined":
-                print(f"User joined: {data.get('userId')}")
+                print(f"User joined: {data.get('username')}")
                 self.connectedUsers = data.get("totalUsers", 0)
             elif msgType == "user_list":
                 self.connectedUsers = len(data.get("users", []))
             elif msgType == "user_left":
-                print(f"User left: {data.get('userId')}")
+                print(f"User left: {data.get('username')}")
                 self.connectedUsers = data.get("totalUsers", 0)
             elif msgType == "error":
                 print(f"Server error: {data.get('message')}")
