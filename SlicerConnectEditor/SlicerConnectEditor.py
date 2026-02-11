@@ -9,24 +9,13 @@ import json
 import base64
 import hashlib
 from datetime import datetime, timezone
-
-from PySide6.QtCore import QTimer, QObject, Signal, QThread
-from PySide6.QtNetwork import QWebSocket
-
-try:
-    from websocket import WebSocketApp
-    import threading
-except ImportError:
-    slicer.util.pip_install('websocket-client')
-    from websocket import WebSocketApp
-    import threading
-
+import websocket
 
 class SlicerConnectEditor(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "SlicerConnectEditor"
-        self.parent.categories = ["IGT"]
+        self.parent.categories = ["None"]
         self.parent.dependencies = []
         self.parent.contributors = ["Your Name"]
         self.parent.helpText = """
@@ -56,6 +45,9 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
         self.ui.refreshConnectionButton.clicked.connect(self.checkAndConnectFromSession)
+
+        self.logic.wsHandler.socketConnected.connect(self.onConnected)
+        self.logic.wsHandler.socketDisconnected.connect(self.onDisconnected)
         self.setupSegmentEditor()
         
         self.checkAndConnectFromSession()
@@ -112,15 +104,13 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
             return
 
         self.addLog(f"Connecting to session {sessionId}...")
-        success = self.logic.connect(sessionId, token)
+        self.logic.connect(sessionId, token)
         
-        if success:
-            self.ui.statusLabel.setText(f"Connected to Session {sessionId}")
-            self.addLog("Connected successfully")
-            self.addLog("Delta-based sync enabled - only changes are sent")
-        else:
-            self.ui.statusLabel.setText("Connection Failed")
-            self.addLog("ERROR: Connection failed")
+    def onConnected(self):
+        self.ui.statusLabel.setText(f"Connected to Session {self.sessionId}")
+
+    def onDisconnected(self):
+        self.ui.statusLabel.setText("Connection Failed")
 
     def promptLogin(self):
         """Show dialog prompting user to login and redirect to login module"""
@@ -140,7 +130,6 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
 
     def onDisconnect(self):
         self.removeObservers()
-        self.logic.disconnect()
         self.ui.statusLabel.setText("Disconnected")
         self.addLog("Disconnected")
 
@@ -223,61 +212,83 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         """Cleanup when module is closed"""
         self.removeObservers()
         if self.logic:
-            self.logic.disconnect()
+            self.logic.closeConnection()
 
     def resourcePath(self, filename):
         """Get path to resource file"""
         scriptedModulesPath = os.path.dirname(slicer.util.modulePath(self.moduleName))
         return os.path.join(scriptedModulesPath, 'Resources', filename)
 
-class WebSocketHandler(QObject):
-    messageReceived = Signal(str)
-    connected = Signal()
-    disconnected = Signal()
-    errorOccurred = Signal(str)
-    
+
+class WebSocketHandler(qt.QObject):
+    messageReceived = qt.Signal(str)
+    socketConnected = qt.Signal()
+    socketDisconnected = qt.Signal()
+    errorOccurred = qt.Signal(str)
+
+    POLL_INTERVAL_MS = 50  
+
     def __init__(self):
         super().__init__()
         self.ws = None
-        
-    def connect(self, url):
-        self.ws = QWebSocket()
-        self.ws.connected.connect(self.onConnected)
-        self.ws.disconnected.connect(self.onDisconnected)
-        self.ws.textMessageReceived.connect(self.onMessage)
-        self.ws.error.connect(self.onError)
-        self.ws.open(url)
-        
-    def onConnected(self):
-        self.connected.emit()
-        
-    def onMessage(self, message):
-        self.messageReceived.emit(message)
-        
-    def onDisconnected(self):
-        self.disconnected.emit()
-        
-    def onError(self):
-        self.errorOccurred.emit(self.ws.errorString())
-        
+        self._isConnected = False
+        self._timer = qt.QTimer()
+        self._timer.timeout.connect(self._poll)
+
+    def connectToServer(self, url):
+        self.ws = websocket.WebSocket()
+        try:
+            self.ws.connect(url)
+            self.ws.sock.setblocking(False) 
+            self._isConnected = True
+            self._timer.start(self.POLL_INTERVAL_MS)
+            self.socketConnected.emit()
+        except Exception as e:
+            self.errorOccurred.emit(str(e))
+
+    def _poll(self):
+        """Called by QTimer every POLL_INTERVAL_MS to check for incoming messages."""
+        if not self.ws or not self._isConnected:
+            return
+        try:
+            message = self.ws.recv()
+            if message:
+                self.messageReceived.emit(message)
+        except websocket.WebSocketConnectionClosedException:
+            self._handleDisconnect()
+        except BlockingIOError:
+            pass  
+        except Exception as e:
+            self.errorOccurred.emit(str(e))
+
+    def _handleDisconnect(self):
+        self._isConnected = False
+        self._timer.stop()
+        self.socketDisconnected.emit()
+
     def send(self, message):
-        if self.ws:
-            self.ws.sendTextMessage(message)
+        if self.ws and self._isConnected:
+            try:
+                self.ws.send(message)
+            except Exception as e:
+                self.errorOccurred.emit(str(e))
 
     def isConnected(self):
-        return self.connected
+        return self._isConnected
 
-            
     def close(self):
+        self._timer.stop()
         if self.ws:
             self.ws.close()
-
+            self.ws = None
+        self._isConnected = False
+        self.socketDisconnected.emit()
 
 class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
         self.segmentationNode = None
-        self.userId = "User1"
+        self.userId = ""
         self.sentCount = 0
         self.receivedCount = 0
         self.connectedUsers = 0
@@ -287,37 +298,33 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
         self.wsHandler = WebSocketHandler()
         self.wsHandler.messageReceived.connect(self.onWsMessage)
-        self.wsHandler.connected.connect(self.onWsConnected)
-        self.wsHandler.disconnected.connect(self.onWsDisconnected)
+        self.wsHandler.socketConnected.connect(self.onWsConnected)
+        self.wsHandler.socketDisconnected.connect(self.onWsDisconnected)
         self.wsHandler.errorOccurred.connect(self.onWsError)
         
-        # Delta tracking
         self.previousSegmentation = None
         self.baselineHash = None
         
-        # IGT Link configuration
-        self.igtlConnectorNode = None
-        self.igtlServerPort = 18944
-        self.useIGTLink = False  # Disabled for delta mode
-
     def connect(self, sessionId, token):
         """Connect to WebSocket server with session ID and token"""
         wsUrl = f"{self.WS_BASE_URL}/{sessionId}/ws?token={token}"
         print(f"Connecting to: {wsUrl}")
-        self.wsHandler.connect(QUrl(wsUrl))
-            
+        self.wsHandler.connectToServer(wsUrl)
 
-    def disconnect(self):
+    def handleDisconnect(self):
         """Disconnect from WebSocket"""
         self.connected = False
 
-        self.wsHandler.disconnect()
+        self.wsHandler._handleDisconnect()
         
         self.sentCount = 0
         self.receivedCount = 0
         self.connectedUsers = 0
         self.previousSegmentation = None
         self.baselineHash = None
+
+    def closeConnection(self):
+        self.wsHandler.close()
 
     def setSegmentationNode(self, node):
         """Set the segmentation node to monitor"""
@@ -329,18 +336,17 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         """Set user ID for identification"""
         self.userId = userId
 
-    def onWsOpen(self, ws):
+    def onWsConnected(self):
         """Handle WebSocket connection opened"""
         print("WebSocket connection opened")
         self.connected = True
         
-        # Request full segmentation state from server
         joinMessage = {
             "type": "join",
             "userId": self.userId,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
-        ws.send(json.dumps(joinMessage))
+        self.wsHandler.send(json.dumps(joinMessage))
 
     def onWsMessage(self, message):
         """Handle incoming WebSocket messages"""
@@ -366,14 +372,14 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         except Exception as e:
             print(f"Error processing message: {str(e)}")
 
-    def onWsError(self, ws, error):
+    def onWsError(self, error):
         """Handle WebSocket errors"""
         print(f"WebSocket error: {error}")
         self.connected = False
 
-    def onWsClose(self, ws, closeStatusCode, closeMsg):
+    def onWsDisconnected(self):
         """Handle WebSocket connection closed"""
-        print(f"WebSocket closed: {closeStatusCode} - {closeMsg}")
+        print(f"WebSocket closed:")
         self.connected = False
 
     def getCurrentSegmentationArray(self):
@@ -493,7 +499,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
                 self.sentCount += 1
                 print(f"Sent delta update #{self.sentCount} ({numChanged} voxels)")
             
-            # Update previous state
             self.previousSegmentation = currentArray.copy()
             
         except Exception as e:
@@ -529,8 +534,8 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
                 }
             }
             
-            if self.ws and self.connected:
-                self.ws.send(json.dumps(message))
+            if self.wsHandler and self.connected:
+                self.wsHandler.send(json.dumps(message))
                 self.sentCount += 1
                 print(f"Sent full segmentation #{self.sentCount}")
                 
@@ -588,70 +593,108 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
     def handleFullSegmentation(self, message):
         """Handle incoming full segmentation"""
-
-        print('recieved incoming segmentation')
-        # if not self.segmentationNode or self.isUpdating:
-        #     return
-
         if message.get("userId") == self.userId:
+            return
+
+        if self.isUpdating:
             return
 
         try:
             self.isUpdating = True
             data = message.get("data", {})
-            print('dtype: ', data.get("dataType"))
-            
+
             import zlib
+            import base64
+
             encodedData = data.get("imageData")
+            if not encodedData:
+                print("No imageData in message")
+                return
+
             compressedData = base64.b64decode(encodedData)
             decompressedData = zlib.decompress(compressedData)
-            
+
             dims = data.get("dimensions")
             dataType = data.get("dataType")
-            print('decompression done')
+
+            if not dims or not dataType:
+                print("Missing dimensions or dataType")
+                return
+
             arrayData = np.frombuffer(decompressedData, dtype=dataType)
             arrayData = arrayData.reshape(dims[2], dims[1], dims[0])
 
-            labelmapNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLLabelMapVolumeNode')
+            labelmapNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLLabelMapVolumeNode', 'TempLabelMap')
             labelmapNode.SetSpacing(data['spacing'])
-            labelmapNode.SetSpacing(data['origin'])
-
+            labelmapNode.SetOrigin(data['origin'])
             slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
 
-            segmentEditor = slicer.modules.segmenteditor.widgetRepresentation().self().editor
-            segmentationNode = segmentEditor.segmentationNode()
+            segmentationNode = self._getOrCreateSegmentationNode()
 
-            if segmentationNode is not None:
-                print("No segmentation node in editor - creating new one")
-                segmentationNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLSegmentationNode")
-                segmentEditor.setSegmentationNode(segmentationNode)
-            
             slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-                labelmapNode, 
+                labelmapNode,
                 segmentationNode
             )
-
             print('import done')
-            
-            #self.updateSegmentNames(segmentationNode, data['segmentNames'])
-            
+
             slicer.mrmlScene.RemoveNode(labelmapNode)
-            
-            #segmentationNode.InvokeCustomModifiedEvent(slicer.vtkMRMLSegmentationNode.Modified)
-            
-            #self.updateSegmentationFromArray(arrayData, updateData)
-            
+            segmentationNode.Modified()
+
+            self.previousSegmentation = arrayData.copy()
             self.receivedCount += 1
             print(f"Applied full segmentation #{self.receivedCount} from {message.get('userId')}")
-            
-            self.previousSegmentation = arrayData.copy()
-            
+
+        except KeyError as e:
+            print(f"Missing required field in segmentation data: {e}")
+            import traceback
+            traceback.print_exc()
+        except zlib.error as e:
+            print(f"Decompression failed: {e}")
         except Exception as e:
             print(f"Error applying full segmentation: {str(e)}")
             import traceback
             traceback.print_exc()
         finally:
             self.isUpdating = False
+
+
+    def _getOrCreateSegmentationNode(self):
+        """
+        Returns a segmentation node in this priority order:
+        1. Node currently selected in Segment Editor
+        2. First segmentation node found in the scene
+        3. Newly created segmentation node
+        """
+        try:
+            segmentEditor = slicer.modules.segmenteditor.widgetRepresentation().self().editor
+            segmentationNode = segmentEditor.segmentationNode()
+            if segmentationNode is not None:
+                print(f"Using segmentation from editor: {segmentationNode.GetName()}")
+                return segmentationNode
+        except Exception:
+            pass  
+
+        segmentationNode = slicer.mrmlScene.GetFirstNodeByClass("vtkMRMLSegmentationNode")
+        if segmentationNode is not None:
+            print(f"Using existing segmentation from scene: {segmentationNode.GetName()}")
+            self._setEditorSegmentationNode(segmentationNode)
+            return segmentationNode
+
+        print("No segmentation node found — creating new one")
+        segmentationNode = slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLSegmentationNode", "ReceivedSegmentation"
+        )
+        self._setEditorSegmentationNode(segmentationNode)
+        return segmentationNode
+
+
+    def _setEditorSegmentationNode(self, segmentationNode):
+        """Set the segmentation node in the Segment Editor if it's open."""
+        try:
+            segmentEditor = slicer.modules.segmenteditor.widgetRepresentation().self().editor
+            segmentEditor.setSegmentationNode(segmentationNode)
+        except Exception:
+            pass  
 
     def updateSegmentationFromArray(self, arrayData, metadata):
         """Update segmentation node from numpy array"""
