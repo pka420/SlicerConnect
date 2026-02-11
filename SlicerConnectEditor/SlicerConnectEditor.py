@@ -51,6 +51,7 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
         self.setupSegmentEditor()
         
         self.checkAndConnectFromSession()
+        self.user_info = slicer.app.settings().value("SlicerConnectUser")
 
     def setupSegmentEditor(self):
         """Setup segment editor with real-time modification tracking"""
@@ -288,7 +289,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
         self.segmentationNode = None
-        self.userId = ""
         self.sentCount = 0
         self.receivedCount = 0
         self.connectedUsers = 0
@@ -332,10 +332,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         self.previousSegmentation = None
         self.baselineHash = None
 
-    def setUserId(self, userId):
-        """Set user ID for identification"""
-        self.userId = userId
-
     def onWsConnected(self):
         """Handle WebSocket connection opened"""
         print("WebSocket connection opened")
@@ -343,7 +339,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         
         joinMessage = {
             "type": "join",
-            "userId": self.userId,
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         self.wsHandler.send(json.dumps(joinMessage))
@@ -428,40 +423,60 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
         return message, None
 
+    def _resampleToShape(self, array, targetShape):
+        """Dependency-free nearest neighbour resize using numpy indexing."""
+        iz = np.round(np.linspace(0, array.shape[0] - 1, targetShape[0])).astype(int)
+        iy = np.round(np.linspace(0, array.shape[1] - 1, targetShape[1])).astype(int)
+        ix = np.round(np.linspace(0, array.shape[2] - 1, targetShape[2])).astype(int)
+        return array[np.ix_(iz, iy, ix)]
+
+    def _computeChangedMask(self, currentArray):
+        """Compare current segmentation to previous, handling shape mismatches."""
+        if self.previousSegmentation is None:
+            return np.ones(currentArray.shape, dtype=bool)
+
+        prev = self.previousSegmentation
+
+        if currentArray.shape != prev.shape:
+            print(f"Shape mismatch: current={currentArray.shape} prev={prev.shape} — resampling")
+            prev = self._resampleToShape(prev, currentArray.shape)
+
+        return currentArray != prev
+
     def sendSegmentationDelta(self):
         """Send only the changed voxels since last update"""
         if self.isUpdating or not self.segmentationNode:
             return
-        
+
         try:
             current, err = self.getCurrentSegmentationArray()
             if err is not None or current is None:
-                print('error while converting to labelmapNode', e)
+                print(f"Error while converting to labelmapNode: {err}")  # bug: was printing `e` which is undefined
                 return
-            
+
             currentArray = current['array']
-            
+
             if self.previousSegmentation is None:
                 print("Sending initial full segmentation")
                 self.sendFullSegmentation(current)
                 self.previousSegmentation = currentArray.copy()
                 return
-            
-            changedMask = currentArray != self.previousSegmentation
-            
+
+            changedMask = self._computeChangedMask(currentArray)  # fixed: handles shape mismatch
+
             if not np.any(changedMask):
                 print("No changes detected, skipping update")
                 return
-            
+
             changedIndices = np.argwhere(changedMask)
             changedValues = currentArray[changedMask]
-            
+
             numChanged = len(changedIndices)
             totalVoxels = currentArray.size
             changePercent = (numChanged / totalVoxels) * 100
-            
+
             print(f"Changed voxels: {numChanged}/{totalVoxels} ({changePercent:.2f}%)")
-            
+
             if changePercent > 30:
                 print("Large change detected, sending full segmentation")
                 self.sendFullSegmentation(current)
@@ -481,7 +496,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             
             message = {
                 "type": "segmentation_delta",
-                "userId": self.userId,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "data": {
                     "indices": encodedIndices,
@@ -523,7 +537,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             
             message = {
                 "type": "segmentation_full",
-                "userId": self.userId,
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "data": {
                     "imageData": encodedData,
@@ -548,9 +561,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         """Handle incoming delta update"""
         print('in handling delta')
         if not self.segmentationNode or self.isUpdating:
-            return
-
-        if data.get("userId") == self.userId:
             return
 
         try:
@@ -593,9 +603,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
     def handleFullSegmentation(self, message):
         """Handle incoming full segmentation"""
-        if message.get("userId") == self.userId:
-            return
-
         if self.isUpdating:
             return
 
