@@ -104,6 +104,8 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         try:
             self.api_client = BackendAPIClient(server_url, token=token)
             user_info = self.api_client.get_current_user()
+            slicer.app.settings().setValue("SlicerConnectUser", user_info)
+            slicer.app.settings().sync()
             
             if user_info is None:
                 self.statusLabel.setText("Authentication failed")

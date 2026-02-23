@@ -1,12 +1,12 @@
 # CollaborativeSegmentation/websocket_client.py
-import websocket
 import json
 import threading
 from typing import Callable, Optional
 import logging
+import slicer
+import websockets
 
 logger = logging.getLogger(__name__)
-
 
 class CollaborationWebSocketClient:
     """WebSocket client for real-time collaborative segmentation updates"""

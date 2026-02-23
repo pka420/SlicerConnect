@@ -246,6 +246,9 @@ class WebSocketHandler(qt.QObject):
         self._isConnected = False
         self._timer = qt.QTimer()
         self._timer.timeout.connect(self._poll)
+        self._pingTimer = qt.QTimer()
+        self._pingTimer.setInterval(5000)
+        self._pingTimer.timeout.connect(self._sendPing)
 
     def connectToServer(self, url):
         self.ws = websocket.WebSocket()
@@ -254,9 +257,19 @@ class WebSocketHandler(qt.QObject):
             self.ws.sock.setblocking(False) 
             self._isConnected = True
             self._timer.start(self.POLL_INTERVAL_MS)
+            self._pingTimer.start()
             self.socketConnected.emit()
         except Exception as e:
             self.errorOccurred.emit(str(e))
+
+    def _sendPing(self):
+        print('sending ping')
+        if self.ws and self._isConnected:
+            try:
+                message={"type": "ping"} 
+                self.ws.send(json.dumps(message))
+            except Exception as e:
+                self.errorOccurred.emit(str(e))
 
     def _poll(self):
         """Called by QTimer every POLL_INTERVAL_MS to check for incoming messages."""
@@ -276,6 +289,7 @@ class WebSocketHandler(qt.QObject):
     def _handleDisconnect(self):
         self._isConnected = False
         self._timer.stop()
+        self._pingTimer.stop()
         self.socketDisconnected.emit()
 
     def send(self, message):
@@ -290,6 +304,7 @@ class WebSocketHandler(qt.QObject):
 
     def closeConnection(self):
         self._timer.stop()
+        self._pingTimer.stop()
         if self.ws:
             self.ws.shutdown()
             self.ws = None
@@ -313,6 +328,13 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         
         self.previousSegmentation = None
         self.baselineHash = None
+
+        self._masterLabelmapNode = None
+
+        self._debounceTimer = qt.QTimer()
+        self._debounceTimer.setSingleShot(True)
+        self._debounceTimer.setInterval(2000)
+        self._debounceTimer.timeout.connect(self._sendDebouncedDelta)
         
     def connect(self, sessionId, token):
         """Connect to WebSocket server with session ID and token"""
@@ -421,8 +443,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             'dtype': str(labelArray.dtype)
         }
 
-        print(message)
-
         return message, None
 
     def _resampleToShape(self, array, targetShape):
@@ -445,9 +465,12 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
         return currentArray != prev
 
+    def _sendDebouncedDelta(self):
+        print('sending delta')
+
     def sendSegmentationDelta(self):
         """Send only the changed voxels since last update"""
-        print('sending delta')
+        self._debounceTimer.start()
         if self.isUpdating or not self.segmentationNode:
             return
 
@@ -607,7 +630,7 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
             self.previousSegmentation = currentArray.copy()
             self.receivedCount += 1
-            print(f"Applied delta #{self.receivedCount} from {data.get('userId')} ({len(values)} voxels)")
+            print(f"Applied delta #{self.receivedCount} from {data.get('username')} ({len(values)} voxels)")
 
         except KeyError as e:
             print(f"Missing field in delta data: {e}")
@@ -620,34 +643,83 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         finally:
             self.isUpdating = False
 
+    def _getOrCreateMasterLabelmap(self, metadata):
+        """Reuse the same labelmap node across updates to avoid creating/deleting nodes."""
+        if self._masterLabelmapNode is None or not slicer.mrmlScene.GetNodeByID(
+            self._masterLabelmapNode.GetID()
+        ):
+            self._masterLabelmapNode = slicer.mrmlScene.AddNewNodeByClass(
+                'vtkMRMLLabelMapVolumeNode', 'CollabLabelMap'
+            )
+        self._masterLabelmapNode.SetSpacing(*metadata['spacing'])
+        self._masterLabelmapNode.SetOrigin(*metadata['origin'])
+        return self._masterLabelmapNode
 
     def _applyArrayToSegmentation(self, arrayData, metadata):
-        """Write a numpy array back into the segmentation node."""
+        """
+        Update segmentation in place using slicer's built-in per-segment update.
+        No import, no new segments, changes reflect immediately on screen.
+        """
         try:
-            labelmapNode = slicer.mrmlScene.AddNewNodeByClass(
-                'vtkMRMLLabelMapVolumeNode', 'TempDeltaLabelMap'
-            )
-
-            labelmapNode.SetSpacing(*metadata['spacing'])
-            labelmapNode.SetOrigin(*metadata['origin'])
-
-            slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
-
             segmentationNode = self._getOrCreateSegmentationNode()
+            segmentation = segmentationNode.GetSegmentation()
 
-            slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-                labelmapNode,
-                segmentationNode
-            )
+            uniqueLabels = sorted([int(l) for l in np.unique(arrayData) if l > 0])
 
-            slicer.mrmlScene.RemoveNode(labelmapNode)
-            segmentationNode.Modified()
+            # --- first time: bootstrap segments if none exist ---
+            if segmentation.GetNumberOfSegments() == 0:
+                labelmapNode = self._getOrCreateMasterLabelmap(metadata)
+                slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
+                slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                    labelmapNode, segmentationNode
+                )
+                print(f"Bootstrapped {segmentation.GetNumberOfSegments()} segments")
+                return
+
+            # --- subsequent updates: update each segment's mask directly ---
+            # disable modified events during bulk update to avoid re-renders mid-update
+            wasModified = segmentationNode.StartModify()
+
+            for labelValue in uniqueLabels:
+                segmentIndex = labelValue - 1
+
+                # create segment if label has no corresponding segment yet
+                if segmentIndex >= segmentation.GetNumberOfSegments():
+                    newSegmentId = segmentation.AddEmptySegment(f"Segment_{labelValue}")
+                    print(f"Added new segment for label {labelValue}: {newSegmentId}")
+
+                segmentId = segmentation.GetNthSegmentID(segmentIndex)
+
+                # extract binary mask for this label
+                binaryMask = (arrayData == labelValue).astype(np.uint8)
+
+                # this is the key call — updates the segment's voxels directly
+                slicer.util.updateSegmentBinaryLabelmapFromArray(
+                    binaryMask,
+                    segmentId,
+                    segmentationNode
+                )
+
+            # handle segments that no longer have any voxels
+            for i in range(segmentation.GetNumberOfSegments()):
+                segmentId = segmentation.GetNthSegmentID(i)
+                labelValue = i + 1
+                if labelValue not in uniqueLabels:
+                    # clear this segment — fill with zeros
+                    binaryMask = np.zeros(arrayData.shape, dtype=np.uint8)
+                    slicer.util.updateSegmentBinaryLabelmapFromArray(
+                        binaryMask,
+                        segmentId,
+                        segmentationNode
+                    )
+
+            # re-enable events and fire a single Modified — triggers one render
+            segmentationNode.EndModify(wasModified)
 
         except Exception as e:
             print(f"Error in _applyArrayToSegmentation: {str(e)}")
             import traceback
             traceback.print_exc()
-
         
     def handleFullSegmentation(self, message):
         """Handle incoming full segmentation"""
@@ -697,7 +769,7 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
             self.previousSegmentation = arrayData.copy()
             self.receivedCount += 1
-            print(f"Applied full segmentation #{self.receivedCount} from {message.get('userId')}")
+            print(f"Applied full segmentation #{self.receivedCount} from {message.get('username')}")
 
         except KeyError as e:
             print(f"Missing required field in segmentation data: {e}")

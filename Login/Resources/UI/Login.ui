@@ -58,14 +58,57 @@
         </widget>
        </item>
        <item>
-        <widget class="QLineEdit" name="loginPassword">
-         <property name="echoMode">
-          <enum>QLineEdit::Password</enum>
-         </property>
-         <property name="placeholderText">
-          <string>Password</string>
-         </property>
-        </widget>
+                                <widget class="QWidget" name="passwordWidget">
+                                    <property name="maximumHeight">
+  <number>30</number>
+                                    </property>
+ <layout class="QHBoxLayout" name="horizontalLayout">
+  <property name="spacing">
+   <number>0</number>
+  </property>
+  <property name="contentsMargins">
+   <number>0</number>
+   <number>0</number>
+   <number>0</number>
+   <number>0</number>
+  </property>
+  <item>
+   <widget class="QLineEdit" name="loginPassword">
+    <property name="echoMode">
+     <enum>QLineEdit::Password</enum>
+    </property>
+    <property name="placeholderText">
+     <string>Password</string>
+    </property>
+    <property name="sizePolicy">
+     <sizepolicy hsizetype="Expanding" vsizetype="Preferred">
+      <horstretch>1</horstretch>
+     </sizepolicy>
+    </property>
+   </widget>
+  </item>
+  <item>
+   <widget class="QToolButton" name="togglePasswordVisibility">
+    <property name="minimumSize">
+     <size>
+      <width>12</width>
+      <height>12</height>
+     </size>
+    </property>
+    <property name="text">
+     <string/>
+    </property>
+    <property name="checkable">
+     <bool>true</bool>
+    </property>
+    <property name="toolTip">
+     <string>Show password</string>
+    </property>
+   </widget>
+  </item>
+ </layout>
+</widget>
+
        </item>
        <item>
         <layout class="QHBoxLayout" name="loginButtonLayout">

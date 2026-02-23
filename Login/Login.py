@@ -63,6 +63,16 @@ class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ui.loginButton.enabled = False 
         self.ui.loginEmail.connect('textChanged(QString)', self.validateLoginForm)
         self.ui.loginPassword.connect('textChanged(QString)', self.validateLoginForm)
+        self.ui.togglePasswordVisibility.connect('toggled(bool)', self.onTogglePasswordVisibility)
+        self.ui.togglePasswordVisibility.setIcon(qt.QIcon(":/Icons/VisibleOff.png"))  
+
+    def onTogglePasswordVisibility(self, is_checked):
+        if is_checked:
+            self.ui.loginPassword.setEchoMode(qt.QLineEdit.Normal)
+            self.ui.togglePasswordVisibility.icon = qt.QIcon(":/Icons/VisibleOn.png")
+        else:
+            self.ui.loginPassword.setEchoMode(qt.QLineEdit.Password)
+            self.ui.togglePasswordVisibility.icon = qt.QIcon(":/Icons/VisibleOff.png")
 
     def validateLoginForm(self, text):
         email_text = self.ui.loginEmail.text
@@ -73,6 +83,8 @@ class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def setLoginLoading(self, loading):
         """Toggle login loading state"""
+
+        print('login loading triggered', loading)
         if loading:
             self.ui.loginButton.setEnabled(False)
             self.ui.loginSpinner.show()
@@ -98,6 +110,7 @@ class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Helper to safely update UI on main thread"""
         if status_message is not None:
             self.ui.statusLabel.setText(status_message)
+            qt.QTimer.singleShot(3000, lambda: self.ui.statusLabel.setText(""))
         if switch_to_login:
             self.ui.stackedWidget.setCurrentIndex(0)
 
@@ -149,8 +162,8 @@ class LoginLogic(ScriptedLoadableModuleLogic):
     def __init__(self, widget):
         super().__init__()
         self.widget = widget
-        self.base_url = "https://slicerconnect.from-delhi.net"
-        #self.base_url = "http://127.0.0.1:8000"
+        #self.base_url = "https://slicerconnect.from-delhi.net"
+        self.base_url = "http://127.0.0.1:8000"
 
     def register(self, username, email, password):
         try:
