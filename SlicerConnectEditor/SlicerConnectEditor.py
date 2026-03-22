@@ -1,5 +1,7 @@
 import os
 import vtk
+from vtk.util import numpy_support
+import vtkSegmentationCorePython as vtkSegmentationCore
 import qt
 import slicer
 from slicer.ScriptedLoadableModule import *
@@ -618,18 +620,18 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
             incomingDims = deltaData.get("dimensions") # [X, Y, Z]
             print('incoming dims: ', incomingDims)
-            currentShape = currentArray.shape          # (Z, Y, X)
+            #currentShape = currentArray.shape          # (Z, Y, X)
             
-            if incomingDims[0] != currentShape[2] or incomingDims[1] != currentShape[1]:
-                scaleZ = currentShape[0] / incomingDims[2]
-                scaleY = currentShape[1] / incomingDims[1]
-                scaleX = currentShape[2] / incomingDims[0]
-                
-                indices = indices.astype(np.float32)
-                indices[:, 0] = np.clip(np.round(indices[:, 0] * scaleZ), 0, currentShape[0] - 1)
-                indices[:, 1] = np.clip(np.round(indices[:, 1] * scaleY), 0, currentShape[1] - 1)
-                indices[:, 2] = np.clip(np.round(indices[:, 2] * scaleX), 0, currentShape[2] - 1)
-                indices = indices.astype(np.uint16)
+            # if incomingDims[0] != currentShape[2] or incomingDims[1] != currentShape[1]:
+            #     scaleZ = currentShape[0] / incomingDims[2]
+            #     scaleY = currentShape[1] / incomingDims[1]
+            #     scaleX = currentShape[2] / incomingDims[0]
+            #     
+            #     indices = indices.astype(np.float32)
+            #     indices[:, 0] = np.clip(np.round(indices[:, 0] * scaleZ), 0, currentShape[0] - 1)
+            #     indices[:, 1] = np.clip(np.round(indices[:, 1] * scaleY), 0, currentShape[1] - 1)
+            #     indices[:, 2] = np.clip(np.round(indices[:, 2] * scaleX), 0, currentShape[2] - 1)
+            #     indices = indices.astype(np.uint16)
 
             currentArray[indices[:, 0], indices[:, 1], indices[:, 2]] = values
 
@@ -671,82 +673,92 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         return self._masterLabelmapNode
 
     def _applyArrayToSegmentation(self, arrayData, metadata):
-        """
-        Update segmentation in place using slicer's built-in per-segment update.
-        No import, no new segments, changes reflect immediately on screen.
-        """
-        try:
-            segmentationNode = self._getOrCreateSegmentationNode()
-            if isinstance(segmentationNode, str):
-                print('segmentationNode is string')
-                segmentationNode = slicer.mrmlScene.GetNodeByID(segmentationNode)
-            else:
-                print('segmentationNode is not a string')
+            """
+            Update segmentation in place using direct VTK Logic calls.
+            Bypasses slicer.util helpers to avoid 'AttributeError' and geometry shifts.
+            """
+            try:
 
-            print(f"DEBUG: Type of node: {type(segmentationNode)}")
-            print(f"DEBUG: Class Name: {segmentationNode.GetClassName() if hasattr(segmentationNode, 'GetClassName') else 'No Class'}")
-
-            segmentation = segmentationNode.GetSegmentation()
-
-            uniqueLabels = sorted([int(l) for l in np.unique(arrayData) if l > 0])
-
-            if segmentation.GetNumberOfSegments() == 0:
+                segmentationNode = self._getOrCreateSegmentationNode()
+                if isinstance(segmentationNode, str):
+                    segmentationNode = slicer.mrmlScene.GetNodeByID(segmentationNode)
+                
+                segmentation = segmentationNode.GetSegmentation()
                 labelmapNode = self._getOrCreateMasterLabelmap(metadata)
-                segmentationNode.SetNodeReferenceID(
-                    slicer.vtkMRMLSegmentationNode.GetReferenceImageGeometryReferenceRole(), 
-                    labelmapNode.GetID()
-                )
-                slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
-                slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
-                    labelmapNode, segmentationNode
-                )
-                print(f"Bootstrapped {segmentation.GetNumberOfSegments()} segments")
-                return
 
-            # --- subsequent updates: update each segment's mask directly ---
-            # disable modified events during bulk update to avoid re-renders mid-update
-            wasModified = segmentationNode.StartModify()
+                uniqueLabels = sorted([int(l) for l in np.unique(arrayData) if l > 0])
 
-            for labelValue in uniqueLabels:
-                segmentIndex = labelValue - 1
+                if segmentation.GetNumberOfSegments() == 0:
+                    segmentationNode.SetNodeReferenceID(
+                        "ReferenceImageGeometry", 
+                        labelmapNode.GetID()
+                    )
+                    slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
+                    slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
+                        labelmapNode, segmentationNode
+                    )
+                    return
 
-                # create segment if label has no corresponding segment yet
-                if segmentIndex >= segmentation.GetNumberOfSegments():
-                    newSegmentId = segmentation.AddEmptySegment(f"Segment_{labelValue}")
-                    print(f"Added new segment for label {labelValue}: {newSegmentId}")
+                segmentationNode.DisableModifiedEventOn()
+                
+                spacing = labelmapNode.GetSpacing()
+                origin = labelmapNode.GetOrigin()
+                dirMatrix = vtk.vtkMatrix4x4()
+                labelmapNode.GetIJKToRASMatrix(dirMatrix)
 
-                segmentId = segmentation.GetNthSegmentID(segmentIndex)
+                existingSegmentIds = [segmentation.GetNthSegmentID(i) for i in range(segmentation.GetNumberOfSegments())]
+                updatedSegmentIds = []
 
-                # extract binary mask for this label
-                binaryMask = (arrayData == labelValue).astype(np.uint8)
+                for labelValue in uniqueLabels:
+                    segmentIndex = labelValue - 1
+                    
+                    if segmentIndex >= segmentation.GetNumberOfSegments():
+                        segmentId = segmentation.AddEmptySegment(f"Segment_{labelValue}")
+                    else:
+                        segmentId = segmentation.GetNthSegmentID(segmentIndex)
+                    
+                    updatedSegmentIds.append(segmentId)
+                    binaryMask = (arrayData == labelValue).astype(np.uint8)
+                    shape = binaryMask.shape # (Z, Y, X)
+                    
+                    orientedMask = vtkSegmentationCore.vtkOrientedImageData()
+                    
+                    orientedMask.SetExtent(0, shape[2]-1, 0, shape[1]-1, 0, shape[0]-1)
+                    orientedMask.AllocateScalars(vtk.VTK_UNSIGNED_CHAR, 1)
 
-                # this is the key call — updates the segment's voxels directly
-                slicer.util.updateSegmentBinaryLabelmapFromArray(
-                    binaryMask,
-                    segmentId,
-                    segmentationNode
-                )
+                    vtkArray = numpy_support.numpy_to_vtk(binaryMask.ravel(), deep=True, array_type=vtk.VTK_UNSIGNED_CHAR)
+                    orientedMask.GetPointData().SetScalars(vtkArray)
 
-            # handle segments that no longer have any voxels
-            for i in range(segmentation.GetNumberOfSegments()):
-                segmentId = segmentation.GetNthSegmentID(i)
-                labelValue = i + 1
-                if labelValue not in uniqueLabels:
-                    # clear this segment — fill with zeros
-                    binaryMask = np.zeros(arrayData.shape, dtype=np.uint8)
-                    slicer.util.updateSegmentBinaryLabelmapFromArray(
-                        binaryMask,
+                    orientedMask.SetSpacing(spacing)
+                    orientedMask.SetOrigin(origin)
+                    orientedMask.SetDirectionMatrix(dirMatrix)
+
+                    slicer.modules.segmentations.logic().SetBinaryLabelmapToSegment(
+                        orientedMask, 
+                        segmentationNode, 
                         segmentId,
-                        segmentationNode
+                        0 # vtkSegmentation.EXTENT_UNION
                     )
 
-            # re-enable events and fire a single Modified — triggers one render
-            segmentationNode.EndModify(wasModified)
+                for segId in existingSegmentIds:
+                    if segId not in updatedSegmentIds:
+                        emptyMask = vtkSegmentationCore.vtkOrientedImageData()
+                        emptyMask.SetSpacing(spacing)
+                        emptyMask.SetOrigin(origin)
+                        emptyMask.SetDirectionMatrix(dirMatrix)
+                        
+                        slicer.modules.segmentations.logic().SetBinaryLabelmapToSegment(
+                            emptyMask, segmentationNode, segId, 0
+                        )
 
-        except Exception as e:
-            print(f"Error in _applyArrayToSegmentation: {str(e)}")
-            import traceback
-            traceback.print_exc()
+                segmentationNode.DisableModifiedEventOff()
+                segmentationNode.Modified()
+
+            except Exception as e:
+                print(f"Error in _applyArrayToSegmentation: {str(e)}")
+                import traceback
+                traceback.print_exc()
+
         
     def handleFullSegmentation(self, message):
         """Handle incoming full segmentation"""
