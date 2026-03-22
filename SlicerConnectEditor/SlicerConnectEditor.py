@@ -17,7 +17,7 @@ class SlicerConnectEditor(ScriptedLoadableModule):
         self.parent.title = "SlicerConnectEditor"
         self.parent.categories = ["None"]
         self.parent.dependencies = []
-        self.parent.contributors = ["Your Name"]
+        self.parent.contributors = ["Piyush Khurana"]
         self.parent.helpText = """
 Real-time multi-user segmentation collaboration using WebSocket with delta updates.
 """
@@ -263,7 +263,6 @@ class WebSocketHandler(qt.QObject):
             self.errorOccurred.emit(str(e))
 
     def _sendPing(self):
-        print('sending ping')
         if self.ws and self._isConnected:
             try:
                 message={"type": "ping"} 
@@ -374,7 +373,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         try:
             data = json.loads(message)
             msgType = data.get("type")
-            print(f"Received message type: {msgType}")
             
             if msgType == "segmentation_delta":
                 self.handleSegmentationDelta(data)
@@ -413,10 +411,17 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             )
             
             labelArray = slicer.util.arrayFromVolume(labelmapNode)
-            dims = labelArray.shape
+            shape = labelArray.shape
+            dims = [shape[2], shape[1], shape[0]]
             
             spacing = list(labelmapNode.GetSpacing())
             origin = list(labelmapNode.GetOrigin())
+            matrix = vtk.vtkMatrix4x4()
+            labelmapNode.GetIJKToRASMatrix(matrix)
+            direction = []
+            for row in range(4):
+                for col in range(4):
+                    direction.append(matrix.GetElement(row, col))
             
             slicer.mrmlScene.RemoveNode(labelmapNode)
             
@@ -440,6 +445,7 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             'spacing': spacing,
             'origin': origin,
             'segmentNames': filteredMapping, 
+            'direction': direction,
             'dtype': str(labelArray.dtype)
         }
 
@@ -560,6 +566,8 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             compressedData = compressor.compress(current['array'].tobytes())
             compressedData += compressor.flush()
             encodedData = base64.b64encode(compressedData).decode('utf-8')
+
+            print('direction: ', current['direction'])
             
             message = {
                 "type": "segmentation_full",
@@ -569,6 +577,7 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
                     "dimensions": current['dimensions'],
                     "spacing": current['spacing'],
                     "origin": current['origin'],
+                    "direction": current['direction'],
                     "dataType": current['dtype']
                 }
             }
@@ -583,9 +592,9 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             import traceback
             traceback.print_exc()
 
+
     def handleSegmentationDelta(self, data):
-        """Handle incoming delta update"""
-        print('in handling delta')
+        """Handle incoming delta update with coordinate safety"""
         if not self.segmentationNode or self.isUpdating:
             return
 
@@ -594,65 +603,71 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             deltaData = data.get("data", {})
 
             import zlib
+            import base64
 
             compressedIndices = base64.b64decode(deltaData["indices"])
             compressedValues = base64.b64decode(deltaData["values"])
-
             indicesBytes = zlib.decompress(compressedIndices)
             valuesBytes = zlib.decompress(compressedValues)
 
             indices = np.frombuffer(indicesBytes, dtype=np.uint16).reshape(-1, 3)
             values = np.frombuffer(valuesBytes, dtype=deltaData["dataType"])
 
-            current, err = self.getCurrentSegmentationArray()
-            if err is not None or current is None:
-                print(f"Error getting segmentation: {err}")
-                return
+            labelmapNode = self._getOrCreateMasterLabelmap(deltaData)
+            currentArray = slicer.util.arrayFromVolume(labelmapNode)
 
-            currentArray = current['array'].copy() 
-
-            incomingDims = tuple(deltaData.get("dimensions", []))  
-            if incomingDims and incomingDims != currentArray.shape:
-                print(f"Delta shape mismatch: incoming={incomingDims} current={currentArray.shape} — remapping indices")
-                scaleZ = currentArray.shape[0] / incomingDims[0]
-                scaleY = currentArray.shape[1] / incomingDims[1]
-                scaleX = currentArray.shape[2] / incomingDims[2]
-
+            incomingDims = deltaData.get("dimensions") # [X, Y, Z]
+            print('incoming dims: ', incomingDims)
+            currentShape = currentArray.shape          # (Z, Y, X)
+            
+            if incomingDims[0] != currentShape[2] or incomingDims[1] != currentShape[1]:
+                scaleZ = currentShape[0] / incomingDims[2]
+                scaleY = currentShape[1] / incomingDims[1]
+                scaleX = currentShape[2] / incomingDims[0]
+                
                 indices = indices.astype(np.float32)
-                indices[:, 0] = np.clip(np.round(indices[:, 0] * scaleZ), 0, currentArray.shape[0] - 1)
-                indices[:, 1] = np.clip(np.round(indices[:, 1] * scaleY), 0, currentArray.shape[1] - 1)
-                indices[:, 2] = np.clip(np.round(indices[:, 2] * scaleX), 0, currentArray.shape[2] - 1)
+                indices[:, 0] = np.clip(np.round(indices[:, 0] * scaleZ), 0, currentShape[0] - 1)
+                indices[:, 1] = np.clip(np.round(indices[:, 1] * scaleY), 0, currentShape[1] - 1)
+                indices[:, 2] = np.clip(np.round(indices[:, 2] * scaleX), 0, currentShape[2] - 1)
                 indices = indices.astype(np.uint16)
 
             currentArray[indices[:, 0], indices[:, 1], indices[:, 2]] = values
 
-            self._applyArrayToSegmentation(currentArray, current)
+            slicer.util.updateVolumeFromArray(labelmapNode, currentArray)
+            
+            self._applyArrayToSegmentation(currentArray, deltaData)
 
-            self.previousSegmentation = currentArray.copy()
-            self.receivedCount += 1
-            print(f"Applied delta #{self.receivedCount} from {data.get('username')} ({len(values)} voxels)")
-
-        except KeyError as e:
-            print(f"Missing field in delta data: {e}")
-            import traceback
-            traceback.print_exc()
         except Exception as e:
-            print(f"Error applying delta: {str(e)}")
-            import traceback
-            traceback.print_exc()
+            print(f"Delta Error: {e}")
         finally:
             self.isUpdating = False
 
     def _getOrCreateMasterLabelmap(self, metadata):
-        """Reuse the same labelmap node across updates to avoid creating/deleting nodes."""
-        if self._masterLabelmapNode is None or not slicer.mrmlScene.GetNodeByID(
-            self._masterLabelmapNode.GetID()
-        ):
+        nodeName = 'CollabLabelMap'
+        
+        if self._masterLabelmapNode is None:
+            self._masterLabelmapNode = slicer.mrmlScene.GetFirstNodeByName(nodeName)
+
+        if self._masterLabelmapNode is None:
             self._masterLabelmapNode = slicer.mrmlScene.AddNewNodeByClass(
-                'vtkMRMLLabelMapVolumeNode', 'CollabLabelMap'
+                'vtkMRMLLabelMapVolumeNode', nodeName
             )
-        self._masterLabelmapNode.SetSpacing(*metadata['spacing'])
-        self._masterLabelmapNode.SetOrigin(*metadata['origin'])
+            dims = metadata.get('dimensions', [256, 256, 256]) # Fallback defaults
+            import numpy as np
+            emptyArray = np.zeros((dims[2], dims[1], dims[0]), dtype=np.uint8)
+            slicer.util.updateVolumeFromArray(self._masterLabelmapNode, emptyArray)
+
+        if self._masterLabelmapNode:
+            self._masterLabelmapNode.SetSpacing(*metadata['spacing'])
+            self._masterLabelmapNode.SetOrigin(*metadata['origin'])
+            
+            if 'direction' in metadata:
+                import vtk
+                m = vtk.vtkMatrix4x4()
+                for i in range(16):
+                    m.SetElement(i // 4, i % 4, metadata['direction'][i])
+                self._masterLabelmapNode.SetIJKToRASMatrix(m)
+                
         return self._masterLabelmapNode
 
     def _applyArrayToSegmentation(self, arrayData, metadata):
@@ -662,13 +677,25 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         """
         try:
             segmentationNode = self._getOrCreateSegmentationNode()
+            if isinstance(segmentationNode, str):
+                print('segmentationNode is string')
+                segmentationNode = slicer.mrmlScene.GetNodeByID(segmentationNode)
+            else:
+                print('segmentationNode is not a string')
+
+            print(f"DEBUG: Type of node: {type(segmentationNode)}")
+            print(f"DEBUG: Class Name: {segmentationNode.GetClassName() if hasattr(segmentationNode, 'GetClassName') else 'No Class'}")
+
             segmentation = segmentationNode.GetSegmentation()
 
             uniqueLabels = sorted([int(l) for l in np.unique(arrayData) if l > 0])
 
-            # --- first time: bootstrap segments if none exist ---
             if segmentation.GetNumberOfSegments() == 0:
                 labelmapNode = self._getOrCreateMasterLabelmap(metadata)
+                segmentationNode.SetNodeReferenceID(
+                    slicer.vtkMRMLSegmentationNode.GetReferenceImageGeometryReferenceRole(), 
+                    labelmapNode.GetID()
+                )
                 slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
                 slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
                     labelmapNode, segmentationNode
@@ -743,6 +770,10 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
             dims = data.get("dimensions")
             dataType = data.get("dataType")
+            direction = data.get("direction")
+            m = vtk.vtkMatrix4x4()
+            for i in range(16):
+                m.SetElement(i // 4, i % 4, direction[i])
 
             if not dims or not dataType:
                 print("Missing dimensions or dataType")
@@ -754,6 +785,7 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             labelmapNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLLabelMapVolumeNode', 'TempLabelMap')
             labelmapNode.SetSpacing(data['spacing'])
             labelmapNode.SetOrigin(data['origin'])
+            labelmapNode.SetIJKToRASMatrix(m)
             slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
 
             segmentationNode = self._getOrCreateSegmentationNode()
