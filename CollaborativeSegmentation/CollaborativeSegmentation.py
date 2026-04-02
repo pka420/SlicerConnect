@@ -1,71 +1,75 @@
-import os 
-import ctk 
+import os
+import ctk
 import qt
 import slicer
 from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 import logging
-import importlib
+from datetime import datetime
 
 from Lib.api_client import BackendAPIClient
 
-from datetime import datetime
+
+ROLE_OWNER = "owner"
+ROLE_EDITOR = "editor"
+ROLE_VIEWER = "viewer"
+
+ROLE_PERMISSIONS = {
+    ROLE_OWNER:  {"can_edit": True,  "can_download": True,  "can_manage_collaborators": True,  "can_delete": True},
+    ROLE_EDITOR: {"can_edit": True,  "can_download": True,  "can_manage_collaborators": False, "can_delete": False},
+    ROLE_VIEWER: {"can_edit": False, "can_download": True,  "can_manage_collaborators": False, "can_delete": False},
+}
+
+
+def get_permissions(role: str) -> dict:
+    return ROLE_PERMISSIONS.get(role.lower(), ROLE_PERMISSIONS[ROLE_VIEWER])
 
 
 class CollaborativeSegmentation(ScriptedLoadableModule):
-    """
-    Main module for collaborative segmentation editing
-    """
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Collaborative Segmentation"
         self.parent.categories = ["Segmentation"]
         self.parent.dependencies = []
         self.parent.contributors = ["Piyush Khurana"]
-        self.parent.helpText = """
-        This extension enables collaborative editing of segmentations in 3D Slicer.
-        Multiple users can work together in real-time on the same segmentation.
-        """
-        self.parent.acknowledgementText = """
-        Developed for collaborative medical image analysis.
-        """
+        self.parent.helpText = ""
+        self.parent.acknowledgementText = ""
+
 
 class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
-    """
-    Main UI widget for the extension
-    """
     def __init__(self, parent=None):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
-
         self.logic = None
         self.api_client = None
-        self.ws_client = None
-
-        # State
         self.current_project = None
-        self.current_session = None
-        self.current_segmentation = None
-
+        self.current_project_name = None
+        self.current_project_role = None
 
     def setup(self):
-        print('in setup')
-        from Lib.api_client import BackendAPIClient
-
-        """Setup the UI"""
         ScriptedLoadableModuleWidget.setup(self)
-        uiWidget = slicer.util.loadUI(self.resourcePath("UI/CollaborativeSegmentation.ui"))
 
         self.logic = CollaborativeSegmentationLogic()
 
-        self.mainCollapsible = ctk.ctkCollapsibleButton()
-        self.mainCollapsible.text = "Collaborative Segmentation"
-        self.layout.addWidget(self.mainCollapsible)
-        mainLayout = qt.QVBoxLayout(self.mainCollapsible)
+        uiWidget = slicer.util.loadUI(self.resourcePath("UI/CollaborativeSegmentation.ui"))
+        self.layout.addWidget(uiWidget)
+        self.ui = slicer.util.childWidgetVariables(uiWidget)
 
+        self.ui.manageCollabButton.clicked.connect(self.onManageCollaboratorsClicked)
+
+        self._buildStatusBar()
+        self._connectSignals()
+        self._initializeConnection()
+
+    def onManageCollaboratorsClicked(self):
+        if not self.current_project:
+            return
+        dialog = ManageCollaboratorsDialog(self.api_client, self.current_project, self.current_project_name, self.parent)
+        dialog.exec()
+
+    def _buildStatusBar(self):
         statusGroup = qt.QGroupBox("Connection Status")
         statusLayout = qt.QFormLayout(statusGroup)
-        mainLayout.addWidget(statusGroup)
 
         self.statusLabel = qt.QLabel("Checking authentication...")
         self.statusLabel.setStyleSheet("font-weight: bold;")
@@ -75,29 +79,17 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         self.refreshConnectionButton.clicked.connect(self._initializeConnection)
         statusLayout.addRow("", self.refreshConnectionButton)
 
-        self.layout.addWidget(uiWidget)
-        self.ui = slicer.util.childWidgetVariables(uiWidget)
+        self.layout.insertWidget(0, statusGroup)
 
+    def _connectSignals(self):
         self.ui.createProjectButton.clicked.connect(self.onCreateProject)
         self.ui.refreshProjectsButton.clicked.connect(self.loadProjects)
-
         self.ui.projectsList.itemSelectionChanged.connect(self.onProjectSelected)
         self.ui.joinSessionButton.connect('clicked(bool)', self.onJoinSessionClicked)
-
-        self._initializeConnection()
-
-    def onBrowseSegmentation(self):
-        file_path = qt.QFileDialog.getOpenFileName(
-            None, "Select Segmentation", "", 
-            "Volumes (*.nii *.nrrd *.nifti *.mha *.gz)"
-        )
-        if file_path:
-            self.ui.segmentationFileEdit.setText(file_path)
-            file_name = os.path.basename(file_path)
-            self.logic.load_segmentation(file_path, file_name)
+        self.ui.downloadSegButton.connect('clicked(bool)', self.onDownloadSegClicked)
+        self.ui.projectTabs.currentChanged.connect(self._onTabChanged)
 
     def _initializeConnection(self):
-        """Try to set up API client using existing token"""
         token = slicer.app.settings().value("SlicerConnectToken")
         server_url = slicer.app.settings().value("SlicerConnectServerURL", "http://localhost:8000")
         try:
@@ -105,195 +97,361 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
             user_info = self.api_client.get_current_user()
             slicer.app.settings().setValue("SlicerConnectUser", user_info)
             slicer.app.settings().sync()
-            
+
             if user_info is None:
-                self.statusLabel.setText("Authentication failed")
-                self.statusLabel.setStyleSheet("color: red;")
+                self._setStatus("Authentication failed", "red")
                 return
-            
-            self.statusLabel.setText(f"Connected as {user_info.get('username')}")
-            self.statusLabel.setStyleSheet("color: green; font-weight: bold;")
-            
+
+            self._setStatus(f"Connected as {user_info.get('username')}", "green")
+
         except Exception as e:
-            self.statusLabel.setText("Connection failed")
-            self.statusLabel.setStyleSheet("color: red;")
+            self._setStatus("Connection failed", "red")
             print(f"Connection error: {str(e)}")
 
+    def _setStatus(self, text: str, color: str):
+        self.statusLabel.setText(text)
+        self.statusLabel.setStyleSheet(f"color: {color}; font-weight: bold;")
+
     def onCreateProject(self):
-        print('creating project')
         if not self.api_client:
             slicer.util.errorDisplay("Not connected to server")
             return
 
-        projectName = self.ui.newProjectNameEdit.text.strip()
+        name = self.ui.newProjectNameEdit.text.strip()
         description = self.ui.newProjectDescEdit.toPlainText().strip()
-
-        print(projectName, description)
-
-        self.api_client.create_project(projectName, description)
+        self.api_client.create_project(name, description)
 
     def loadProjects(self):
-        print('loading projects')
         if not self.api_client:
             slicer.util.errorDisplay("Not connected to server")
             return
 
         projects = self.api_client.list_projects()
-        print(projects)
-
         self.ui.projectsList.clear()
+
         for project in projects:
             item = qt.QTreeWidgetItem(self.ui.projectsList)
             item.setText(0, project['name'])
             item.setText(1, project['role'].capitalize())
-            date_str = project['updated_at']
-            item.setText(2, self.format_date(date_str))
-            date_str = project['created_at']
-            item.setText(3, self.format_date(date_str))
-            status = self.get_project_status(project)
-            item.setText(4, status)
+            item.setText(2, self.logic.format_date(project['updated_at']))
+            item.setText(3, self.logic.format_date(project['created_at']))
+            item.setText(4, self.logic.get_project_status(project))
             item.setData(0, qt.Qt.UserRole, project['id'])
+            item.setData(1, qt.Qt.UserRole, project['role'])
+            item.setData(2, qt.Qt.UserRole, project['name'])
             self.ui.projectsList.addTopLevelItem(item)
-        
-        for i in range(4):
+
+        for i in range(5):
             self.ui.projectsList.resizeColumnToContents(i)
 
     def onProjectSelected(self):
         selectedItems = self.ui.projectsList.selectedItems()
-        
+
         if not selectedItems:
-            self.ui.joinSessionButton.enabled = False
+            self._clearProjectDetails()
             return
-        
+
         selectedItem = selectedItems[0]
-        
+        project_id = selectedItem.data(0, qt.Qt.UserRole)
+        role = selectedItem.data(1, qt.Qt.UserRole) or ROLE_VIEWER
+
+        self.current_project = project_id
+        self.current_project_name = selectedItem.data(2, qt.Qt.UserRole)
+        self.current_project_role = role
+
+        perms = get_permissions(role)
+
+        self.ui.joinSessionButton.enabled = perms["can_edit"]
+        self.ui.downloadSegButton.enabled = perms["can_download"]
+
         updated_at = selectedItem.text(2)
-        
-        if updated_at != "Never":
-            self.ui.joinSessionButton.setText("Continue Editing")
-        else:
-            self.ui.joinSessionButton.setText("Start Editing")
-        
-        self.ui.joinSessionButton.enabled = True
+        self.ui.joinSessionButton.setText("Continue Editing" if updated_at != "Never" else "Start Editing")
 
-        self.displaySegmentations(selectedItem)
-        self.displayCollabStuff(selectedItem)
+        self._loadSegmentations(project_id)
+        self._loadCollaborators(project_id, perms)
 
-    def displaySegmentations(self, projectItem):
-        project_id = projectItem.data(0, qt.Qt.UserRole)  
+    def _clearProjectDetails(self):
+        self.current_project = None
+        self.current_project_role = None
+        self.ui.joinSessionButton.enabled = False
+        self.ui.downloadSegButton.enabled = False
+        self.ui.segmentationsList.clear()
+
+    def _loadSegmentations(self, project_id):
         segs = self.api_client.list_segmentations(project_id)
-        print(segs)
-        #display in ui
+        self.ui.segmentationsList.clear()
+        for seg in segs:
+            item = qt.QListWidgetItem(seg.get('name', 'Unnamed'))
+            item.setData(qt.Qt.UserRole, seg.get('id'))
+            self.ui.segmentationsList.addItem(item)
 
-    def displayCollabStuff(self, projectItem):
-        project_id = projectItem.data(0, qt.Qt.UserRole)  
+    def _loadCollaborators(self, project_id, perms: dict):
         project_details = self.api_client.get_project_details(project_id)
         collaborators = project_details.get('collaborators', [])
-        collaboratorNames = [c.get('username', 'Unknown') for c in collaborators]
-        collaboratorText = ', '.join(collaboratorNames) if collaboratorNames else 'No collaborators'
-        # self.ui.collaboratorsLabel.setText(f"Collaborators: {collaboratorText}")
-        print(f"Collaborators: {collaboratorText}")
-        
-        segCount = project_details.get('segmentation_count', 0)
-        print(f"Segmentation count: {segCount}")
-        #display this in the ui once you have time..
-        
-        return False
+        names = [c.get('username', 'Unknown') for c in collaborators]
+        print(f"Collaborators: {', '.join(names) if names else 'None'}")
+        print(f"Segmentation count: {project_details.get('segmentation_count', 0)}")
+
+        if perms["can_manage_collaborators"]:
+            self._enableCollaboratorManagement(project_id, collaborators)
+        else:
+            self._disableCollaboratorManagement()
+
+    def _enableCollaboratorManagement(self, project_id, collaborators):
+        if hasattr(self.ui, 'manageCollabButton'):
+            self.ui.manageCollabButton.enabled = True
+            self.ui.manageCollabButton.setToolTip("")
+
+    def _disableCollaboratorManagement(self):
+        if hasattr(self.ui, 'manageCollabButton'):
+            self.ui.manageCollabButton.enabled = False
+            self.ui.manageCollabButton.setToolTip("Only owners can manage collaborators")
 
     def onJoinSessionClicked(self):
-        selectedItems = self.ui.projectsList.selectedItems()
-        selectedItem = selectedItems[0] 
+        if not self.current_project:
+            return
 
-        session_id = selectedItem.data(0, qt.Qt.UserRole)
-        slicer.app.settings().setValue("SlicerConnectSessionId", session_id)
+        perms = get_permissions(self.current_project_role or ROLE_VIEWER)
+        if not perms["can_edit"]:
+            slicer.util.errorDisplay("You do not have permission to edit this project.")
+            return
+
+        slicer.app.settings().setValue("SlicerConnectSessionId", self.current_project)
         slicer.app.settings().sync()
-
         slicer.util.selectModule("SlicerConnectEditor")
-        return
 
-    def format_date(self, date_str):
-        """Format ISO date string to readable format."""
+    def onDownloadSegClicked(self):
+        if not self.current_project:
+            return
+
+        perms = get_permissions(self.current_project_role or ROLE_VIEWER)
+        if not perms["can_download"]:
+            slicer.util.errorDisplay("You do not have permission to download segmentations.")
+            return
+
+        selectedSegs = self.ui.segmentationsList.selectedItems()
+        if not selectedSegs:
+            slicer.util.errorDisplay("Please select a segmentation to download.")
+            return
+
+        seg_id = selectedSegs[0].data(qt.Qt.UserRole)
+        try:
+            local_path = self.api_client.download_segmentation(seg_id)
+            self.logic.load_segmentation(local_path, selectedSegs[0].text())
+        except Exception as e:
+            slicer.util.errorDisplay(f"Download failed: {str(e)}")
+
+    def _onTabChanged(self, index):
+        if self.ui.projectTabs.tabText(index) == "My Projects" and self.api_client:
+            self.loadProjects()
+
+
+class CollaborativeSegmentationLogic(ScriptedLoadableModuleLogic):
+    def __init__(self):
+        ScriptedLoadableModuleLogic.__init__(self)
+        self.current_segmentation_node = None
+
+    def format_date(self, date_str: str) -> str:
         if not date_str:
             return 'Never'
         try:
             dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
             return dt.strftime('%b %d, %Y')
-        except:
+        except Exception:
             return date_str
 
-    def get_project_status(self, project):
-        """Determine project status string."""
-        if project['is_locked']:
-            if project['locked_by_username']:
-                return f"{project['locked_by_username']}"
-            return "Locked"
+    def get_project_status(self, project: dict) -> str:
+        if project.get('is_locked'):
+            locked_by = project.get('locked_by_username')
+            return locked_by if locked_by else "Locked"
         return "Active"
 
-
-class CollaborativeSegmentationLogic(ScriptedLoadableModuleLogic):
-    """
-    Logic for handling segmentation operations in 3D Slicer
-    """
-    
-    def __init__(self):
-        ScriptedLoadableModuleLogic.__init__(self)
-        self.current_segmentation_node = None
-    
-    def create_empty_segmentation(self):
-        """Create an empty segmentation and return file path"""
-        import nrrd
-        import numpy as np
-        import tempfile
-        
-        # Create small empty array
-        empty_array = np.zeros((10, 10, 10), dtype=np.uint8)
-        
-        # Save to temp file
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.nrrd')
-        nrrd.write(temp_file.name, empty_array)
-        
-        return temp_file.name
-    
-    def load_segmentation(self, file_path, name):
-        """Load segmentation into Slicer"""
-        # Load the segmentation
+    def load_segmentation(self, file_path: str, name: str) -> bool:
         self.current_segmentation_node = slicer.util.loadSegmentation(file_path)
         if self.current_segmentation_node:
             self.current_segmentation_node.SetName(name)
             return True
         return False
-    
+
+    def create_empty_segmentation(self) -> str:
+        import nrrd
+        import numpy as np
+        import tempfile
+
+        empty_array = np.zeros((10, 10, 10), dtype=np.uint8)
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.nrrd')
+        nrrd.write(temp_file.name, empty_array)
+        return temp_file.name
 
     def apply_delta(self, delta: dict):
-        """
-        Apply received delta to current segmentation
-        This is placeholder - real implementation depends on your delta format
-        """
         if not self.current_segmentation_node:
             logging.warning("No active segmentation node to apply delta")
             return
-
-        # Example: very simplified placeholder
-        logging.info(f"Applying delta from other user: {delta}")
-
-        # ── Real implementation ideas ────────────────────────────────────────
-        # 1. Label map delta (add/remove voxels)
-        # 2. JSON representation of changed segments
-        # 3. Binary mask difference
-        # 4. Use Segment Editor effects programmatically
-
-        # For now just show notification
+        logging.info(f"Applying delta: {delta}")
         slicer.util.infoDisplay("Received collaborative update (delta applied)")
 
-    def send_delta_example(self, ws_client, change_type="add", segment_id=1):
-        """Example how to send changes - call from your tools/effects"""
+    def send_delta_example(self, ws_client, change_type: str = "add", segment_id: int = 1):
         if not ws_client:
             return
-
-        example_delta = {
+        delta = {
             "type": change_type,
             "segment_id": segment_id,
             "timestamp": slicer.util.currentTime(),
-            # ... voxels, mask, transform, etc. ...
         }
-        ws_client.send_delta(example_delta)
+        ws_client.send_delta(delta)
+
+
+class ManageCollaboratorsDialog(qt.QDialog):
+    def __init__(self, api_client, project_id, project_name, parent=None):
+        qt.QDialog.__init__(self, parent)
+        self.api_client = api_client
+        self.project_id = project_id
+        self.project_name = project_name
+        self.pending_role_changes = {}
+        self.setWindowTitle("Manage Collaborators")
+        self.setMinimumWidth(480)
+        self._build()
+        self._refresh()
+
+    def _build(self):
+        layout = qt.QVBoxLayout(self)
+
+        tabs = qt.QTabWidget()
+        layout.addWidget(tabs)
+
+        rolesTab = qt.QWidget()
+        rolesLayout = qt.QVBoxLayout(rolesTab)
+
+        self.table = qt.QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["Username", "Role", ""])
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, qt.QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, qt.QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, qt.QHeaderView.ResizeToContents)
+        self.table.setSelectionMode(qt.QAbstractItemView.NoSelection)
+        self.table.setEditTriggers(qt.QAbstractItemView.NoEditTriggers)
+        rolesLayout.addWidget(self.table)
+
+        self.saveBtn = qt.QPushButton("Save Changes")
+        self.saveBtn.enabled = False
+        self.saveBtn.setStyleSheet("background-color: #2a82da; color: white;")
+        self.saveBtn.clicked.connect(lambda _: self._onSave())
+        rolesLayout.addWidget(self.saveBtn)
+
+        tabs.addTab(rolesTab, "Change Roles")
+
+        addTab = qt.QWidget()
+        addLayout = qt.QVBoxLayout(addTab)
+
+        formLayout = qt.QFormLayout()
+
+        self.userCombo = qt.QComboBox()
+        formLayout.addRow("User:", self.userCombo)
+
+        self.roleCombo = qt.QComboBox()
+        self.roleCombo.addItems([ROLE_EDITOR.capitalize(), ROLE_VIEWER.capitalize()])
+        formLayout.addRow("Role:", self.roleCombo)
+
+        addLayout.addLayout(formLayout)
+
+        addBtn = qt.QPushButton("Add Collaborator")
+        addBtn.clicked.connect(self._onAdd)
+        addLayout.addWidget(addBtn)
+
+        addLayout.addStretch()
+        tabs.addTab(addTab, "Add Collaborator")
+
+
+        closeBtn = qt.QPushButton("Close")
+        closeBtn.clicked.connect(lambda _: self.close())
+        layout.addWidget(closeBtn)
+
+
+    def _refresh(self):
+        try:
+            collaborators = self.api_client.get_project_collaborators(self.project_id)
+        except Exception as e:
+            slicer.util.errorDisplay(f"Failed to load collaborators: {str(e)}")
+            return
+
+        self.table.setRowCount(0)
+        for collab in collaborators:
+            row = self.table.rowCount
+            self.table.insertRow(row)
+
+            self.table.setItem(row, 0, qt.QTableWidgetItem(collab.get('username', 'Unknown')))
+
+            roleCombo = qt.QComboBox()
+            roleCombo.addItems([ROLE_OWNER.capitalize(), ROLE_EDITOR.capitalize(), ROLE_VIEWER.capitalize()])
+            current_role = collab.get('role', ROLE_VIEWER).capitalize()
+            roleCombo.setCurrentText(current_role)
+            user_id = collab.get('user_id')
+
+            roleCombo.currentTextChanged.connect(lambda text, uid=user_id: self._onRoleChanged(uid, text))
+            self.table.setCellWidget(row, 1, roleCombo)
+
+            removeBtn = qt.QPushButton("Remove")
+            removeBtn.clicked.connect(lambda checked, uid=user_id: self._onRemove(uid))
+            self.table.setCellWidget(row, 2, removeBtn)
+
+        try:
+            all_users = self.api_client.get_all_users()
+            existing_ids = {collab.get('id') for collab in collaborators}
+            self.userCombo.clear()
+            for user in all_users:
+                if user['id'] not in existing_ids:
+                    self.userCombo.addItem(f"{user['username']} ({user['email']})", user['id'])
+        except Exception as e:
+            print(f"Failed to load users: {str(e)}")
+
+    def _onRoleChanged(self, user_id: int, role_text: str):
+        self.pending_role_changes[user_id] = role_text.lower()
+        self.saveBtn.enabled = True
+    
+    def _onSave(self):
+        errors = []
+        for user_id, role in self.pending_role_changes.items():
+            try:
+                self.api_client.change_collaborator_role(self.project_id, user_id, role)
+            except Exception as e:
+                errors.append(str(e))
+
+        if errors:
+            slicer.util.errorDisplay("Some changes failed:\n" + "\n".join(errors))
+        else:
+            self.pending_role_changes.clear()
+            slicer.util.infoDisplay(f"Roles updated successfully.")
+            self.saveBtn.enabled = False
+            self._refresh()
+
+    def _onRemove(self, user_id: int):
+        confirm = qt.QMessageBox.question(
+            self,
+            "Remove Collaborator",
+            "Are you sure you want to remove this collaborator?",
+            qt.QMessageBox.Yes | qt.QMessageBox.No
+        )
+        if confirm != qt.QMessageBox.Yes:
+            return
+        try:
+            self.api_client.remove_project_collaborator(self.project_id, user_id)
+            username = self.userCombo.currentText
+            slicer.util.infoDisplay(f"{username} removed from Project {self.project_name} successfully.")
+            self._refresh()
+        except Exception as e:
+            slicer.util.errorDisplay(f"Failed to remove collaborator: {str(e)}")
+
+    def _onAdd(self):
+        user_id = self.userCombo.currentData
+        if user_id is None:
+            slicer.util.errorDisplay("No users available to add.")
+            return
+
+        role = self.roleCombo.currentText
+        try:
+            self.api_client.add_project_collaborator(self.project_id, user_id, role)
+            username = self.userCombo.currentText
+            slicer.util.infoDisplay(f"{username} added to Project {self.project_name} as {role} successfully.")
+            self._refresh()
+        except Exception as e:
+            slicer.util.errorDisplay(f"Failed to add collaborator: {str(e)}")

@@ -3,6 +3,7 @@ import requests
 from typing import Dict, Any, Optional, List
 import json
 import slicer
+import os                                   
 
 
 class BackendAPIClient:
@@ -19,15 +20,20 @@ class BackendAPIClient:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     def _handle_response(self, response: requests.Response) -> Any:
-        """Interceptor-like handler for all responses"""
         if response.status_code == 401:
             if self._try_refresh_token():
                 return None
             else:
                 self._handle_auth_failure()
                 raise requests.exceptions.HTTPError("Authentication failed", response=response)
-        
-        response.raise_for_status()
+
+        if not response.ok:
+            try:
+                detail = response.json().get("detail", response.text)
+            except Exception:
+                detail = response.text
+            raise requests.exceptions.HTTPError(detail, response=response)
+
         return response
 
     def _try_refresh_token(self) -> bool:
@@ -43,6 +49,7 @@ class BackendAPIClient:
             )
             
             if response.status_code == 200:
+                m
                 data = response.json()
                 self.token = data.get("access_token")
                 new_refresh = data.get("refresh_token")
@@ -182,7 +189,58 @@ class BackendAPIClient:
             slicer.util.errorDisplay(f"Failed to download segmentation: {str(e)}")
             raise
 
-    # ── Sessions ──────────────────────────────────────────────────────────────
+    def get_all_users(self) -> List[Dict]:
+        return self._make_request('GET', f"{self.base_url}/users/all-users")
+
+    def get_project_collaborators(self, project_id) -> List[Dict]:                                                                                                                                                 
+        return self._make_request(                                                                                                                                                                                 
+            'GET',                                                                                                                                                                                                 
+            f"{self.base_url}/projects/{project_id}/collaborators"
+        )                                           
+                                                    
+    def add_project_collaborator(self, project_id, user_id: int, role: str) -> Dict:
+        return self._make_request(
+            'POST',                                 
+            f"{self.base_url}/projects/{project_id}/collaborators",  
+            json={"user_id": user_id, "role": role}               
+        )                                                                                                
+                                                    
+    def change_collaborator_role(self, project_id, user_id: int, role: str) -> Dict:
+        print("sending request to change collaborators")
+        print("args: ", project_id, user_id, role)
+        return self._make_request(                  
+            'PATCH',                                
+            f"{self.base_url}/projects/{project_id}/collaborators/{user_id}",
+            json={"role": role}                 
+        )                                                                                                
+                                                    
+    def remove_project_collaborator(self, project_id, user_id: int) -> Dict:
+        return self._make_request(                  
+            'DELETE',                               
+            f"{self.base_url}/projects/{project_id}/collaborators/{user_id}"
+        )                                                                                                
+                                                                                                         
+    def get_segmentation(self, segmentation_id: str) -> Dict:
+        return self._make_request(                  
+            'GET',                                                                                       
+            f"{self.base_url}/segmentations/{segmentation_id}"
+        )                                                                                                
+                                                    
+    def get_segmentation_versions(self, segmentation_id: str) -> List[Dict]:
+        return self._make_request(                                                                       
+            'GET',                                  
+            f"{self.base_url}/segmentations/{segmentation_id}/versions"
+        )                                           
+                                                    
+    def upload_segmentation(self, file_path: str) -> Dict:
+        files = {"file": (os.path.basename(file_path), open(file_path, "rb"), "application/octet-stream")}
+                                                    
+        return self._make_request(
+            'POST',                                 
+            f"{self.base_url}/segmentations/",                                                           
+            files=files                                                                                  
+        )
+
     def start_session(self, segmentation_id: str, name: str = "") -> Dict:
         return self._make_request(
             'POST',

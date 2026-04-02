@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>520</width>
-    <height>420</height>
+    <height>460</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -19,6 +19,7 @@
      <property name="currentIndex">
       <number>0</number>
      </property>
+
      <widget class="QWidget" name="createProjectTab">
       <attribute name="title">
        <string>Create New</string>
@@ -51,7 +52,7 @@
        <item row="2" column="1">
         <widget class="QPushButton" name="createProjectButton">
          <property name="text">
-          <string>Create Project </string>
+          <string>Create Project</string>
          </property>
         </widget>
        </item>
@@ -89,7 +90,7 @@
          </column>
          <column>
           <property name="text">
-           <string>Created at</string>
+           <string>Created At</string>
           </property>
          </column>
          <column>
@@ -138,6 +139,16 @@
            </property>
            <property name="text">
             <string>Download Segmentation</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="manageCollabButton">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>Manage Collaborators</string>
            </property>
           </widget>
          </item>
@@ -200,6 +211,7 @@
        </item>
       </layout>
      </widget>
+
     </widget>
    </item>
   </layout>
