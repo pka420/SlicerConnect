@@ -8,7 +8,6 @@ import logging
 import importlib
 
 from Lib.api_client import BackendAPIClient
-from Lib.websocket_client import CollaborationWebSocketClient
 
 from datetime import datetime
 
