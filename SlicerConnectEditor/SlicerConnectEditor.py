@@ -350,6 +350,11 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         self.receivedCount = 0
         self.connectedUsers = 0
         self.previousSegmentation = None
+
+        if self._masterLabelmapNode:
+            slicer.mrmlScene.RemoveNode(self._masterLabelmapNode)
+            self._masterLabelmapNode = None
+
         self.baselineHash = None
 
     def closeConnection(self):
@@ -379,6 +384,7 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
             if msgType == "segmentation_delta":
                 self.handleSegmentationDelta(data)
             elif msgType == "segmentation_full":
+                print("ReceivedSegmentation")
                 self.handleFullSegmentation(data)
             elif msgType == "user_joined":
                 print(f"User joined: {data.get('username')}")
@@ -511,11 +517,11 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
             print(f"Changed voxels: {numChanged}/{totalVoxels} ({changePercent:.2f}%)")
 
-            if changePercent > 30:
-                print("Large change detected, sending full segmentation")
-                self.sendFullSegmentation(current)
-                self.previousSegmentation = currentArray.copy()
-                return
+            # if changePercent > 30:
+            #     print("Large change detected, sending full segmentation")
+            self.sendFullSegmentation(current)
+            self.previousSegmentation = currentArray.copy()
+            return
             
             import zlib
             
@@ -644,34 +650,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         finally:
             self.isUpdating = False
 
-    def _getOrCreateMasterLabelmap(self, metadata):
-        nodeName = 'CollabLabelMap'
-        
-        if self._masterLabelmapNode is None:
-            self._masterLabelmapNode = slicer.mrmlScene.GetFirstNodeByName(nodeName)
-
-        if self._masterLabelmapNode is None:
-            self._masterLabelmapNode = slicer.mrmlScene.AddNewNodeByClass(
-                'vtkMRMLLabelMapVolumeNode', nodeName
-            )
-            dims = metadata.get('dimensions', [256, 256, 256]) # Fallback defaults
-            import numpy as np
-            emptyArray = np.zeros((dims[2], dims[1], dims[0]), dtype=np.uint8)
-            slicer.util.updateVolumeFromArray(self._masterLabelmapNode, emptyArray)
-
-        if self._masterLabelmapNode:
-            self._masterLabelmapNode.SetSpacing(*metadata['spacing'])
-            self._masterLabelmapNode.SetOrigin(*metadata['origin'])
-            
-            if 'direction' in metadata:
-                import vtk
-                m = vtk.vtkMatrix4x4()
-                for i in range(16):
-                    m.SetElement(i // 4, i % 4, metadata['direction'][i])
-                self._masterLabelmapNode.SetIJKToRASMatrix(m)
-                
-        return self._masterLabelmapNode
-
     def _applyArrayToSegmentation(self, arrayData, metadata):
             """
             Update segmentation in place using direct VTK Logic calls.
@@ -793,14 +771,13 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
             arrayData = np.frombuffer(decompressedData, dtype=dataType)
             arrayData = arrayData.reshape(dims[2], dims[1], dims[0])
-
-            labelmapNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLLabelMapVolumeNode', 'TempLabelMap')
-            labelmapNode.SetSpacing(data['spacing'])
-            labelmapNode.SetOrigin(data['origin'])
-            labelmapNode.SetIJKToRASMatrix(m)
+            
+            labelmapNode = self._getOrCreateMasterLabelmap(data)
             slicer.util.updateVolumeFromArray(labelmapNode, arrayData)
 
             segmentationNode = self._getOrCreateSegmentationNode()
+
+            segmentationNode.GetSegmentation().RemoveAllSegments()
 
             slicer.modules.segmentations.logic().ImportLabelmapToSegmentationNode(
                 labelmapNode,
@@ -810,7 +787,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
 
             slicer.mrmlScene.RemoveNode(labelmapNode)
             segmentationNode.Modified()
-
             self.previousSegmentation = arrayData.copy()
             self.receivedCount += 1
             print(f"Applied full segmentation #{self.receivedCount} from {message.get('username')}")
@@ -858,6 +834,50 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         self._setEditorSegmentationNode(segmentationNode)
         return segmentationNode
 
+
+    def _getOrCreateMasterLabelmap(self, metadata):
+        nodeName = 'CollabLabelMap'
+        
+        # 1. Try internal reference first
+        if self._masterLabelmapNode is not None:
+            return self._masterLabelmapNode
+
+        # 2. Search scene for the node by name
+        self._masterLabelmapNode = slicer.mrmlScene.GetFirstNodeByName(nodeName)
+
+        # 3. If not found by name, check classes (robust check for renamed nodes)
+        if not self._masterLabelmapNode:
+            nodes = slicer.mrmlScene.GetNodesByClass('vtkMRMLLabelMapVolumeNode')
+            for i in range(nodes.GetNumberOfItems()):
+                # FIX: Use GetItemAsObject instead of GetItemAsVTKObject
+                node = nodes.GetItemAsObject(i)
+                if nodeName in node.GetName():
+                    self._masterLabelmapNode = node
+                    break
+
+        # 4. Create if it still doesn't exist
+        if not self._masterLabelmapNode:
+            self._masterLabelmapNode = slicer.mrmlScene.AddNewNodeByClass(
+                'vtkMRMLLabelMapVolumeNode', nodeName
+            )
+            # Hide from the data tree and Subject Hierarchy
+            self._masterLabelmapNode.SetHideFromEditors(True)
+            
+            dims = metadata.get('dimensions', [256, 256, 256])
+            import numpy as np
+            emptyArray = np.zeros((dims[2], dims[1], dims[0]), dtype=np.uint8)
+            slicer.util.updateVolumeFromArray(self._masterLabelmapNode, emptyArray)
+
+        # 5. Sync Geometry
+        self._masterLabelmapNode.SetSpacing(*metadata['spacing'])
+        self._masterLabelmapNode.SetOrigin(*metadata['origin'])
+        if 'direction' in metadata and len(metadata['direction']) == 16:
+            m = vtk.vtkMatrix4x4()
+            for i in range(16):
+                m.SetElement(i // 4, i % 4, metadata['direction'][i])
+            self._masterLabelmapNode.SetIJKToRASMatrix(m)
+                
+        return self._masterLabelmapNode
 
     def _setEditorSegmentationNode(self, segmentationNode):
         """Set the segmentation node in the Segment Editor if it's open."""
