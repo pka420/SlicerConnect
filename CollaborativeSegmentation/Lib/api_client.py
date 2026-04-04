@@ -130,6 +130,9 @@ class BackendAPIClient:
     def get_project_details(self, project_id) -> Dict:
         return self._make_request('GET', f"{self.base_url}/projects/{project_id}")
 
+    def delete_project(self, project_id) -> Dict:
+        return self._make_request('DELETE', f"{self.base_url}/projects/{project_id}")
+
     def create_segmentation(self, project_id: str, name: str, color: str, file_path: str) -> Dict:
         import os
         files = {"file": (os.path.basename(file_path), open(file_path, "rb"), "application/octet-stream")}

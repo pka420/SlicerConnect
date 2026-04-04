@@ -87,6 +87,7 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         self.ui.projectsList.itemSelectionChanged.connect(self.onProjectSelected)
         self.ui.joinSessionButton.connect('clicked(bool)', self.onJoinSessionClicked)
         self.ui.downloadSegButton.connect('clicked(bool)', self.onDownloadSegClicked)
+        self.ui.delProjectButton.connect('clicked(bool)', self.onDeleteProjectClicked)
         self.ui.projectTabs.currentChanged.connect(self._onTabChanged)
 
     def _initializeConnection(self):
@@ -163,6 +164,7 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
 
         self.ui.joinSessionButton.enabled = perms["can_edit"]
         self.ui.downloadSegButton.enabled = perms["can_download"]
+        self.ui.delProjectButton.enabled = perms["can_delete"]
 
         updated_at = selectedItem.text(2)
         self.ui.joinSessionButton.setText("Continue Editing" if updated_at != "Never" else "Start Editing")
@@ -241,6 +243,35 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
         except Exception as e:
             slicer.util.errorDisplay(f"Download failed: {str(e)}")
 
+    def onDeleteProjectClicked(self):
+        if not self.current_project:
+            return
+
+        perms = get_permissions(self.current_project_role or ROLE_EDITOR)
+        if not perms["can_delete"]:
+            slicer.util.errorDisplay("You do not have permission to delete this Project.")
+            return
+
+        msg = qt.QMessageBox()
+        msg.setIcon(qt.QMessageBox.Warning)
+        msg.setText("Are you sure you want to delete this project?")
+        msg.setInformativeText(
+            "All associated segmentations, data, and collaborators will be permanently deleted. "
+            "This action cannot be undone."
+        )
+        msg.setWindowTitle("Confirm Project Deletion")
+        
+        msg.setStandardButtons(qt.QMessageBox.Yes | qt.QMessageBox.Cancel)
+        msg.setDefaultButton(qt.QMessageBox.Cancel) 
+        response = msg.exec_()
+        
+        if response == qt.QMessageBox.Yes:
+            print("User confirmed. Proceeding with API call to delete...")
+            try:
+                self.api_client.delete_project(self.current_project)
+            except Exception as e:
+                slicer.util.errorDisplay(f"Failed to delete project {self.current_project_name}: {str(e)}")
+
     def _onTabChanged(self, index):
         if self.ui.projectTabs.tabText(index) == "My Projects" and self.api_client:
             self.loadProjects()
@@ -272,16 +303,6 @@ class CollaborativeSegmentationLogic(ScriptedLoadableModuleLogic):
             self.current_segmentation_node.SetName(name)
             return True
         return False
-
-    def create_empty_segmentation(self) -> str:
-        import nrrd
-        import numpy as np
-        import tempfile
-
-        empty_array = np.zeros((10, 10, 10), dtype=np.uint8)
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.nrrd')
-        nrrd.write(temp_file.name, empty_array)
-        return temp_file.name
 
     def apply_delta(self, delta: dict):
         if not self.current_segmentation_node:
@@ -382,7 +403,7 @@ class ManageCollaboratorsDialog(qt.QDialog):
             self.table.setItem(row, 0, qt.QTableWidgetItem(collab.get('username', 'Unknown')))
 
             roleCombo = qt.QComboBox()
-            roleCombo.addItems([ROLE_OWNER.capitalize(), ROLE_EDITOR.capitalize(), ROLE_VIEWER.capitalize()])
+            roleCombo.addItems([ROLE_EDITOR.capitalize(), ROLE_VIEWER.capitalize()])
             current_role = collab.get('role', ROLE_VIEWER).capitalize()
             roleCombo.setCurrentText(current_role)
             user_id = collab.get('user_id')
