@@ -276,8 +276,8 @@ def get_permissions(role: str) -> dict:
 class SlicerConnect(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = "Collaborative Segmentation"
-        self.parent.categories = ["Segmentation"]
+        self.parent.title = "SlicerConnect"
+        self.parent.categories = ["Collaborative Segmentation Editor"]
         self.parent.dependencies = []
         self.parent.contributors = ["Piyush Khurana"]
         self.parent.helpText = ""

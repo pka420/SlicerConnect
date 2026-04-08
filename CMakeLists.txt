@@ -8,6 +8,8 @@ set(EXTENSION_CONTRIBUTORS "Piyush Khurana (Aryabhatta College)")
 set(EXTENSION_DESCRIPTION "For real-time multi-user collaboration of segmentation editing")
 set(EXTENSION_DEPENDS "NA")
 set(EXTENSION_ICONURL "/SlicerConnect.png")
+set(EXTENSION_LICENSE_FILE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
+set(EXTENSION_SCREENSHOT_URLS "/Screenshots/Main.png")
 
 #-----------------------------------------------------------------------------
 # Extension dependencies

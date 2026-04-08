@@ -114,7 +114,7 @@ class SlicerConnectEditorWidget(ScriptedLoadableModuleWidget, VTKObservationMixi
                 "No Session Detected",
                 "Select a project first."
             )
-            slicer.util.selectModule("CollaborativeSegmentation")
+            slicer.util.selectModule("SlicerConnect")
 
     def connectToSession(self, sessionId):
         """Connect to a specific session"""
