@@ -6,13 +6,13 @@ SlicerConnect is a 3D Slicer extension designed to enable "Google Docs-style" co
 
 The extension consists of three specialized modules that manage the lifecycle of a collaborative session:
 
-### Login
+### SlicerConnectLogin
 
 - Handles secure user authentication.
 - Exchanges credentials for a session token from the central server.
 - Ensures encrypted communication for all subsequent steps.
 
-### CollaborativeSegmentation
+### SlicerConnect
 
 The Project Hub of the extension.
 
@@ -41,47 +41,13 @@ The Real-Time Engine.
 Clone this repository to your local machine:
 
 ```
-git clone https://github.com/your-repo/SlicerConnect.git
+git clone https://github.com/pka420/SlicerConnect.git
 ```
 
 1. Open 3D Slicer.
 2. Navigate to **Edit -> Application Settings -> Modules**.
 3. Click **Add** and select the root `SlicerConnect` folder.
 4. Restart Slicer to initialize the modules.
-
-## Testing on a Single Computer
-
-You can test the full collaborative experience on a single Linux machine by launching two isolated Slicer instances.
-
-### 1. Launch Instance A (User 1)
-
-Open a terminal and run:
-
-```bash
-mkdir /tmp/slicer_bob/
-./Slicer -HOME=/tmp/slicer_bob -settings-disabled --additional-module-paths /path/to/SlicerConnect/
-```
-
-Go to **Login**, sign in as `User_A`. In **CollaborativeSegmentation**, select a project and enter **Edit Mode**.
-
-### 2. Launch Instance B (User 2)
-
-Open a second terminal and run the same command:
-
-```bash
-mkdir /tmp/slicer_alice
-./Slicer HOME=/tmp/slicer_alice --settings-disabled --additional-module-paths /path/to/SlicerConnect/
-```
-
-Log in as `User_B` and join the same project.
-
-### 3. Verify Synchronization
-
-- Place the two Slicer windows side-by-side.
-- Pick a tool (e.g., **Paint**) in Instance A and draw on a slice.
-- The segmentation should appear in Instance B after a brief transmission delay.
-
-> **Note:** Using the `--settings-disabled` flag is essential for local testing. It prevents both instances from trying to write to the same `.ini` file simultaneously, which causes crashes.
 
 ## Architecture Highlights
 
@@ -127,10 +93,12 @@ When a full sync is triggered, the module exports the `vtkMRMLSegmentationNode` 
   "type": "full_segmentation",
   "data": {
     "array": "base64_string",
+    "sessionHash": "hash of current array that we are sending",
     "origin": [x, y, z],
     "spacing": [sx, sy, sz],
     "direction": [m00, m01, "...", m33],
-    "dimensions": [w, h, d]
+    "dimensions": [w, h, d],
+    "timestamp": datetime
   }
 }
 ```
