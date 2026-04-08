@@ -1,0 +1,7 @@
+# Extension metadata
+scmurl https://github.com/pka420/SlicerConnect
+scmrevision main
+category Collaboration
+contributors Piyush Khurana (Delhi University)
+description Real-time multi-user collaborative segmentation using WebSockets.
+iconurl https://raw.githubusercontent.com/pka420/SlicerConnect/main/SlicerConnect.png

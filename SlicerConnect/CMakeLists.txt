@@ -1,7 +1,7 @@
 find_package(Slicer REQUIRED)
 include(${Slicer_USE_FILE})
 
-set(module_name CollaborativeSegmentation) 
+set(module_name SlicerConnect) 
 
 slicerMacroBuildScriptedModule(
   NAME ${module_name}

@@ -13,7 +13,7 @@ except ImportError:
     slicer.util.pip_install("requests")
     import requests
 
-class Login(ScriptedLoadableModule):
+class SlicerConnectLogin(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "SlicerConnect Login"
@@ -22,19 +22,19 @@ class Login(ScriptedLoadableModule):
         self.parent.contributors = ["Piyush Khurana"]
 
 
-class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class SlicerConnectLoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def __init__(self, parent=None):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
-        uiWidget = slicer.util.loadUI(self.resourcePath("UI/Login.ui"))
+        uiWidget = slicer.util.loadUI(self.resourcePath("UI/SlicerConnectLogin.ui"))
         spinnerPath = self.resourcePath("UI/spinner.gif")
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
-        self.logic = LoginLogic(self)
+        self.logic = SlicerConnectLoginLogic(self)
 
         self.ui.registerButton.clicked.connect(self.onRegister)
         self.ui.loginButton.clicked.connect(self.onLogin)
@@ -158,12 +158,11 @@ class LoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._update_ui(message)
 
 
-class LoginLogic(ScriptedLoadableModuleLogic):
+class SlicerConnectLoginLogic(ScriptedLoadableModuleLogic):
     def __init__(self, widget):
         super().__init__()
         self.widget = widget
-        #self.base_url = "https://slicerconnect.from-delhi.net"
-        self.base_url = "http://127.0.0.1:8000"
+        self.base_url = "https://slicerconnect.from-delhi.net"
 
     def register(self, username, email, password):
         try:

@@ -6,9 +6,8 @@ from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 import logging
 from datetime import datetime
-
-from Lib.api_client import BackendAPIClient
-
+import requests
+from typing import Dict, Any, Optional, List
 
 ROLE_OWNER = "owner"
 ROLE_EDITOR = "editor"
@@ -21,11 +20,260 @@ ROLE_PERMISSIONS = {
 }
 
 
+class BackendAPIClient:
+    def __init__(self, base_url: str, token: str):
+        self.base_url = base_url.rstrip('/')
+        self.token = token
+        self.session = requests.Session()
+        self.refresh_token = None  
+
+        if token == None:
+            slicer.util.selectModule("SlicerConnectLogin")
+
+    def _headers(self) -> Dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+
+    def _handle_response(self, response: requests.Response) -> Any:
+        if response.status_code == 401:
+            if self._try_refresh_token():
+                return None
+            else:
+                self._handle_auth_failure()
+                raise requests.exceptions.HTTPError("Authentication failed", response=response)
+
+        if not response.ok:
+            try:
+                detail = response.json().get("detail", response.text)
+            except Exception:
+                detail = response.text
+            raise requests.exceptions.HTTPError(detail, response=response)
+
+        return response
+
+    def _try_refresh_token(self) -> bool:
+        """Attempt to refresh the access token using refresh token"""
+        try:
+            refresh_token = slicer.app.settings().value("SlicerConnectRefreshToken")
+            if not refresh_token:
+                return False
+            
+            response = self.session.post(
+                f"{self.base_url}/auth/refresh",
+                json={"refresh_token": refresh_token}
+            )
+            
+            if response.status_code == 200:
+                m
+                data = response.json()
+                self.token = data.get("access_token")
+                new_refresh = data.get("refresh_token")
+                
+                slicer.app.settings().setValue("SlicerConnectToken", self.token)
+                if new_refresh:
+                    slicer.app.settings().setValue("SlicerConnectRefreshToken", new_refresh)
+                
+                print("Token refreshed successfully")
+                return True
+            else:
+                return False
+                
+        except Exception as e:
+            print(f"Token refresh failed: {str(e)}")
+            return False
+
+    def _handle_auth_failure(self):
+        """Handle authentication failure - clear tokens and switch to login"""
+        print("Authentication failed - clearing tokens")
+        slicer.app.settings().setValue("SlicerConnectToken", "")
+        slicer.app.settings().setValue("SlicerConnectRefreshToken", "")
+        self.token = None
+        self.refresh_token = None
+        
+        slicer.util.errorDisplay("Session expired. Please log in again.")
+        slicer.util.selectModule("SlicerConnectLogin")
+
+    def _make_request(self, method: str, url: str, **kwargs) -> Any:
+        """Wrapper for all requests with automatic retry on 401"""
+        try:
+            if 'headers' not in kwargs:
+                kwargs['headers'] = {}
+            kwargs['headers'].update(self._headers())
+            response = self.session.request(method, url, **kwargs)
+            handled_response = self._handle_response(response)
+            
+            if handled_response is None:
+                kwargs['headers'].update(self._headers())  
+                response = self.session.request(method, url, **kwargs)
+                self._handle_response(response)  
+            
+            return response.json() if response.content else {}
+            
+        except requests.exceptions.HTTPError as e:
+            raise
+        except Exception as e:
+            print(f"Request error: {str(e)}")
+            slicer.util.errorDisplay(f"Request failed: {str(e)}")
+            raise
+
+    def get_current_user(self) -> Dict:
+        """Get information about currently logged-in user"""
+        info =  self._make_request('GET', f"{self.base_url}/users/me")
+        print(info)
+        return info
+
+    def create_project(self, name: str, description: str = "") -> Dict:
+        return self._make_request(
+            'POST',
+            f"{self.base_url}/projects",
+            json={"name": name, "description": description}
+        )
+
+    def list_projects(self) -> List[Dict]:
+        return self._make_request('GET', f"{self.base_url}/projects")
+
+    def get_project_details(self, project_id) -> Dict:
+        return self._make_request('GET', f"{self.base_url}/projects/{project_id}")
+
+    def delete_project(self, project_id) -> Dict:
+        return self._make_request('DELETE', f"{self.base_url}/projects/{project_id}")
+
+    def create_segmentation(self, project_id: str, name: str, color: str, file_path: str) -> Dict:
+        import os
+        files = {"file": (os.path.basename(file_path), open(file_path, "rb"), "application/octet-stream")}
+        data = {"name": name, "color": color}
+
+        return self._make_request(
+            'POST',
+            f"{self.base_url}/projects/{project_id}/segmentations",
+            data={"data": json.dumps(data)},
+            files=files
+        )
+
+    def list_segmentations(self, project_id: str) -> List[Dict]:
+        return self._make_request(
+            'GET',
+            f"{self.base_url}/segmentations/projects/{project_id}"
+        )
+
+    def download_segmentation(self, segmentation_id: str) -> str:
+        """Download segmentation file and return temporary local path"""
+        import tempfile
+        
+        try:
+            headers = self._headers()
+            response = self.session.get(
+                f"{self.base_url}/segmentations/{segmentation_id}/download",
+                headers=headers,
+                stream=True
+            )
+            
+            if response.status_code == 401:
+                if self._try_refresh_token():
+                    headers = self._headers()
+                    response = self.session.get(
+                        f"{self.base_url}/segmentations/{segmentation_id}/file",
+                        headers=headers,
+                        stream=True
+                    )
+                else:
+                    self._handle_auth_failure()
+                    raise requests.exceptions.HTTPError("Authentication failed")
+            
+            response.raise_for_status()
+
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.seg.nrrd')
+            with open(temp_file.name, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            return temp_file.name
+            
+        except Exception as e:
+            print(f"Download error: {str(e)}")
+            slicer.util.errorDisplay(f"Failed to download segmentation: {str(e)}")
+            raise
+
+    def get_all_users(self) -> List[Dict]:
+        return self._make_request('GET', f"{self.base_url}/users/all-users")
+
+    def get_project_collaborators(self, project_id) -> List[Dict]:                                                                                                                                                 
+        return self._make_request(                                                                                                                                                                                 
+            'GET',                                                                                                                                                                                                 
+            f"{self.base_url}/projects/{project_id}/collaborators"
+        )                                           
+                                                    
+    def add_project_collaborator(self, project_id, user_id: int, role: str) -> Dict:
+        return self._make_request(
+            'POST',                                 
+            f"{self.base_url}/projects/{project_id}/collaborators",  
+            json={"user_id": user_id, "role": role}               
+        )                                                                                                
+                                                    
+    def change_collaborator_role(self, project_id, user_id: int, role: str) -> Dict:
+        print("sending request to change collaborators")
+        print("args: ", project_id, user_id, role)
+        return self._make_request(                  
+            'PATCH',                                
+            f"{self.base_url}/projects/{project_id}/collaborators/{user_id}",
+            json={"role": role}                 
+        )                                                                                                
+                                                    
+    def remove_project_collaborator(self, project_id, user_id: int) -> Dict:
+        return self._make_request(                  
+            'DELETE',                               
+            f"{self.base_url}/projects/{project_id}/collaborators/{user_id}"
+        )                                                                                                
+                                                                                                         
+    def get_segmentation(self, segmentation_id: str) -> Dict:
+        return self._make_request(                  
+            'GET',                                                                                       
+            f"{self.base_url}/segmentations/{segmentation_id}"
+        )                                                                                                
+                                                    
+    def get_segmentation_versions(self, segmentation_id: str) -> List[Dict]:
+        return self._make_request(                                                                       
+            'GET',                                  
+            f"{self.base_url}/segmentations/{segmentation_id}/versions"
+        )                                           
+                                                    
+    def upload_segmentation(self, file_path: str) -> Dict:
+        files = {"file": (os.path.basename(file_path), open(file_path, "rb"), "application/octet-stream")}
+                                                    
+        return self._make_request(
+            'POST',                                 
+            f"{self.base_url}/segmentations/",                                                           
+            files=files                                                                                  
+        )
+
+    def start_session(self, segmentation_id: str, name: str = "") -> Dict:
+        return self._make_request(
+            'POST',
+            f"{self.base_url}/sessions",
+            json={
+                "segmentation_id": segmentation_id,
+                "name": name or "Unnamed Session"
+            }
+        )
+
+    def get_active_sessions(self, segmentation_id: str = None) -> List[Dict]:
+        params = {"segmentation_id": segmentation_id} if segmentation_id else {}
+        return self._make_request(
+            'GET',
+            f"{self.base_url}/sessions/active",
+            params=params
+        )
+
+    def end_session(self, session_id: str) -> Dict:
+        return self._make_request(
+            'DELETE',
+            f"{self.base_url}/sessions/{session_id}"
+        )
+
 def get_permissions(role: str) -> dict:
     return ROLE_PERMISSIONS.get(role.lower(), ROLE_PERMISSIONS[ROLE_VIEWER])
 
 
-class CollaborativeSegmentation(ScriptedLoadableModule):
+class SlicerConnect(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Collaborative Segmentation"
@@ -36,7 +284,7 @@ class CollaborativeSegmentation(ScriptedLoadableModule):
         self.parent.acknowledgementText = ""
 
 
-class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class SlicerConnectWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def __init__(self, parent=None):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
@@ -49,9 +297,9 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
 
-        self.logic = CollaborativeSegmentationLogic()
+        self.logic = SlicerConnectLogic()
 
-        uiWidget = slicer.util.loadUI(self.resourcePath("UI/CollaborativeSegmentation.ui"))
+        uiWidget = slicer.util.loadUI(self.resourcePath("UI/SlicerConnect.ui"))
         self.layout.addWidget(uiWidget)
         self.ui = slicer.util.childWidgetVariables(uiWidget)
 
@@ -92,7 +340,7 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
 
     def _initializeConnection(self):
         token = slicer.app.settings().value("SlicerConnectToken")
-        server_url = slicer.app.settings().value("SlicerConnectServerURL", "http://localhost:8000")
+        server_url = slicer.app.settings().value("SlicerConnectServerURL", "https://slicerconnect.from-delhi.net")
         try:
             self.api_client = BackendAPIClient(server_url, token=token)
             user_info = self.api_client.get_current_user()
@@ -277,7 +525,7 @@ class CollaborativeSegmentationWidget(ScriptedLoadableModuleWidget, VTKObservati
             self.loadProjects()
 
 
-class CollaborativeSegmentationLogic(ScriptedLoadableModuleLogic):
+class SlicerConnectLogic(ScriptedLoadableModuleLogic):
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
         self.current_segmentation_node = None

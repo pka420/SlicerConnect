@@ -5,9 +5,7 @@ project(SlicerConnect)
 # Extension meta-information
 set(EXTENSION_HOMEPAGE "https://www.slicer.org/wiki/Documentation/Nightly/Extensions/SlicerConnect")
 set(EXTENSION_CONTRIBUTORS "Piyush Khurana (Aryabhatta College)")
-set(EXTENSION_DESCRIPTION "For 3d Slicer Collaboration	")
-set(EXTENSION_ICONURL "https://www.example.com/Slicer/Extensions/SlicerConnect.png")
-set(EXTENSION_SCREENSHOTURLS "https://www.example.com/Slicer/Extensions/SlicerConnect/Screenshots/1.png")
+set(EXTENSION_DESCRIPTION "For real-time multi-user collaboration of segmentation editing")
 set(EXTENSION_DEPENDS "NA")
 set(EXTENSION_ICONURL "/SlicerConnect.png")
 
@@ -18,8 +16,9 @@ include(${Slicer_USE_FILE})
 
 #-----------------------------------------------------------------------------
 # Extension modules
-add_subdirectory(Login)
-add_subdirectory(SyncData)
+add_subdirectory(SlicerConnectLogin)
+add_subdirectory(SlicerConnect)
+add_subdirectory(SlicerConnectEditor)
 
 ## NEXT_MODULE
 #-----------------------------------------------------------------------------

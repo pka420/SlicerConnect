@@ -1,7 +1,7 @@
 find_package(Slicer REQUIRED)
 include(${Slicer_USE_FILE})
 
-set(module_name Login) 
+set(module_name SlicerConnectLogin) 
 
 slicerMacroBuildScriptedModule(
   NAME ${module_name}
