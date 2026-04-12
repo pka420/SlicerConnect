@@ -7,12 +7,6 @@ from slicer.ScriptedLoadableModule import *
 from slicer.util import VTKObservationMixin
 import threading
 
-try:
-    import requests
-except ImportError:
-    slicer.util.pip_install("requests")
-    import requests
-
 class SlicerConnectLogin(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
@@ -160,9 +154,21 @@ class SlicerConnectLoginWidget(ScriptedLoadableModuleWidget, VTKObservationMixin
 
 class SlicerConnectLoginLogic(ScriptedLoadableModuleLogic):
     def __init__(self, widget):
+        self.ensureDependencies()
         super().__init__()
         self.widget = widget
         self.base_url = "https://slicerconnect.from-delhi.net"
+
+    def ensureDependencies(self):
+        """Checks and installs dependencies only when needed."""
+        try:
+            import requests
+            self.requests = requests
+        except ImportError:
+            slicer.util.showStatusMessage("Installing required dependencies...")
+            slicer.util.pip_install("requests")
+            import requests
+            self.requests = requests
 
     def register(self, username, email, password):
         try:
@@ -172,17 +178,17 @@ class SlicerConnectLoginLogic(ScriptedLoadableModuleLogic):
                 "email": email,
                 "password": password
             }
-            response = requests.post(url, json=payload, timeout=4.0)
+            response = self.requests.post(url, json=payload, timeout=4.0)
             if response.status_code in (200, 201):
                 self.widget.onRegisterComplete(True, response.text)
             else:
                 error_msg = response.json().get("detail", response.text or "Unknown error")
                 self.widget.onRegisterComplete(False, f"Registration failed: {error_msg}")
-        except requests.Timeout:
+        except self.requests.Timeout:
             self.widget.onRegisterComplete(False, "Registration timed out (4 seconds).")
-        except requests.ConnectionError:
+        except self.requests.ConnectionError:
             self.widget.onRegisterComplete(False, "Connection failed. Check network or server URL.")
-        except requests.HTTPError as e:
+        except self.requests.HTTPError as e:
             self.widget.onRegisterComplete(False, f"Server error: {str(e)}")
         except Exception as e:
             self.widget.onRegisterComplete(False, f"Unexpected error: {str(e)}")
@@ -193,7 +199,7 @@ class SlicerConnectLoginLogic(ScriptedLoadableModuleLogic):
         headers = {"Content-Type": "application/json"}
         
         try:
-            response = requests.post(url, json=payload, headers=headers, timeout=4)
+            response = self.requests.post(url, json=payload, headers=headers, timeout=4)
             response.raise_for_status()
             
             data = response.json()
@@ -205,11 +211,11 @@ class SlicerConnectLoginLogic(ScriptedLoadableModuleLogic):
                 
             self.widget.onLoginComplete(True, "Login successful", token)
             
-        except requests.Timeout:
+        except self.requests.Timeout:
             self.widget.onLoginComplete(False, "Login timed out (4s)", None)
-        except requests.ConnectionError:
+        except self.requests.ConnectionError:
             self.widget.onLoginComplete(False, "Cannot connect to server", None)
-        except requests.HTTPError:
+        except self.requests.HTTPError:
             try:
                 data = response.json()
                 msg = data.get("detail") or data.get("message") or response.text

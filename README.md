@@ -2,6 +2,34 @@
 
 SlicerConnect is a 3D Slicer extension designed to enable "Google Docs-style" collaboration for medical image segmentation. It allows multiple researchers or clinicians to work on the same segmentation simultaneously, synchronizing edits in real-time across different locations.
 
+## Quick Start Guide
+**Prerequisites**: Ensure you have a stable internet connection.
+
+### Testing with Sample Data
+To test the collaborative features without using your own clinical data:
+1. Open the **Sample Data** module (built into 3D Slicer).
+2. Select **MRHead**. Slicer will automatically download and load this standard brain MRI volume.
+3. You can then use this volume to start a SlicerConnect session.
+
+### 1. Authentication
+* Open the **SlicerConnectLogin** module.
+* Enter your credentials and click **Login**. 
+* *Note: On first run, Slicer may briefly pause to install the `requests` library.*
+
+### 2. Creating a Collaborative Session
+* Once logged in, switch to the **SlicerConnect** module.
+* Click **Create New Project** or select an existing one from the list.
+* Load your base volume (e.g., from the Slicer "Sample Data" module).
+* Click **Start Session**. This will initialize the synchronization engine.
+* Share the Project ID with your collaborators so they can join.
+* *Note: On first run, Slicer may briefly pause to install the `websockets` library.*
+
+## Privacy & Data Security
+**SlicerConnect** is a cloud-based collaborative tool. Please be aware of the following:
+* **Data Hosting**: Segmentation data (voxels and deltas) are transmitted to and temporarily stored on our synchronization server at `https://slicerconnect.from-delhi.net`.
+* **Encryption**: All communication is performed over HTTPS and Secure WebSockets (WSS).
+* **Compliance**: Ensure you have the necessary institutional approvals before uploading Protected Health Information (PHI) or de-identify your images before use.
+
 ## Extension Structure
 
 The extension consists of three specialized modules that manage the lifecycle of a collaborative session:
@@ -148,3 +176,17 @@ Rather than re-importing the whole volume (which is slow), we update specific se
 | `_getOrCreateMasterLabelmap` | Maintains a persistent MRML node to store incoming pixel data across reloads. |
 | `_applyArrayToSegmentation` | The core engine that converts Numpy arrays into physical VTK segments. |
 | `vtkOrientedImageData` | The internal Slicer data structure that stores the Direction Matrix alongside the pixels. |
+
+## Screenshots:
+<img src="Screenshots/Main.png" alt="screenshot" width="600" />
+
+
+## How to Cite
+If you use SlicerConnect in your research, please cite:
+> Author Name, et al. "SlicerConnect: Real-time Collaborative Segmentation." *Journal Name*, Year. [DOI: 10.xxxx/xxxx]
+
+## References
+This extension builds upon several open-source technologies:
+* **3D Slicer**: [https://www.slicer.org/](https://www.slicer.org/)
+* **websockets**: Used for real-time synchronization between clients. [https://github.com/python-websockets/websockets](https://github.com/python-websockets/websockets)
+* **Requests**: Used for secure authentication with the backend API.

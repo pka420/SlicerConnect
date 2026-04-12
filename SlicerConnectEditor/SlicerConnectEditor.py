@@ -11,7 +11,6 @@ import json
 import base64
 import hashlib
 from datetime import datetime, timezone
-import websocket
 
 class SlicerConnectEditor(ScriptedLoadableModule):
     def __init__(self, parent):
@@ -255,8 +254,21 @@ class WebSocketHandler(qt.QObject):
 
     POLL_INTERVAL_MS = 200
 
+    def ensureDependencies(self):
+        """Checks and installs websocket-client if missing."""
+        try:
+            import websocket
+            self.websocket = websocket
+        except ImportError:
+            slicer.util.showStatusMessage("Installing websocket dependencies...")
+            slicer.util.pip_install("websocket-client")
+            import websocket
+            self.websocket = websocket
+
+
     def __init__(self):
         super().__init__()
+        self.ensureDependencies()
         self.ws = None
         self._isConnected = False
         self._timer = qt.QTimer()
@@ -266,7 +278,7 @@ class WebSocketHandler(qt.QObject):
         self._pingTimer.timeout.connect(self._sendPing)
 
     def connectToServer(self, url):
-        self.ws = websocket.WebSocket()
+        self.ws = self.websocket.WebSocket()
         try:
             self.ws.connect(url)
             self.ws.sock.setblocking(False) 
@@ -293,7 +305,7 @@ class WebSocketHandler(qt.QObject):
             message = self.ws.recv()
             if message:
                 self.messageReceived.emit(message)
-        except websocket.WebSocketConnectionClosedException:
+        except self.websocket.WebSocketConnectionClosedException:
             self._handleDisconnect()
         except BlockingIOError:
             pass  
@@ -328,7 +340,6 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
         self.WS_BASE_URL = "ws://slicerconnect.from-delhi.net/collaboration/sessions"
-
         self._nodeUpdatedCallbacks = []
         self.segmentationNode = None
         self.sentCount = 0
@@ -345,6 +356,7 @@ class SlicerConnectEditorLogic(ScriptedLoadableModuleLogic):
         self.baselineHash = None
 
         self._masterLabelmapNode = None
+
 
     def _emitNodeUpdated(self, node):
         for cb in self._nodeUpdatedCallbacks:

@@ -485,11 +485,16 @@ class SlicerConnectWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
 
         seg_id = selectedSegs[0].data(qt.Qt.UserRole)
+        local_path=Null
         try:
             local_path = self.api_client.download_segmentation(seg_id)
             self.logic.load_segmentation(local_path, selectedSegs[0].text())
         except Exception as e:
             slicer.util.errorDisplay(f"Download failed: {str(e)}")
+        finally:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+                print(f"Cleaned up temporary file: {local_path}")
 
     def onDeleteProjectClicked(self):
         if not self.current_project:
