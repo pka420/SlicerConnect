@@ -2,6 +2,11 @@
 
 SlicerConnect is a 3D Slicer extension designed to enable "Google Docs-style" collaboration for medical image segmentation. It allows multiple researchers or clinicians to work on the same segmentation simultaneously, synchronizing edits in real-time across different locations.
 
+## Links
+
+- [Live backend](https://slicerconnect.from-delhi.net)
+- [Source code](https://github.com/pka420/SlicerConnectBackend)
+
 ## Quick Start Guide
 **Prerequisites**: Ensure you have a stable internet connection.
 
